@@ -1,0 +1,79 @@
+<Project>
+
+  <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.props" />
+
+  <PropertyGroup>
+    <TargetFrameworks>net9.0;netstandard2.1</TargetFrameworks>
+    <RootNamespace>Gemstone.PQDIF</RootNamespace>
+    <PackageId>Gemstone.PQDIF</PackageId>
+    <Authors>Grid Protection Alliance</Authors>
+    <Company>Grid Protection Alliance</Company>
+    <Product>Gemstone</Product>
+    <PackageDescription>GPA Gemstone PQDIF Library</PackageDescription>
+    <Description>GPA Gemstone Power Quality Data Exchange File Format Parser Library</Description>
+    <Copyright>Copyright © 2023</Copyright>
+    <PackageProjectUrl>https://github.com/gemstone</PackageProjectUrl>
+    <PackageIcon>gemstone-square-128.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/gemstone/pqdif</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>GPA;Gemstone;library;pqdif</PackageTags>
+    <LangVersion>latest</LangVersion>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Version>1.0.182</Version>
+    <InformationalVersion Condition="'$(Configuration)'=='Release'">1.0.182 -- Release Build</InformationalVersion>
+    <InformationalVersion Condition="'$(Configuration)'!='Release'">1.0.182 -- Debug Build</InformationalVersion>
+    <Configurations>Debug;Release;Development</Configurations>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <OutputPath>..\..\build\$(Configuration)</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DocumentationFile>..\..\build\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Development'">
+    <DebugType>Full</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="TagDefinitions.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="TagDefinitions.xml">
+      <LogicalName>TagDefinitions.xml</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\docs\README.md" Link="README.md" Visible="false">
+      <Pack>True</Pack>
+      <PackagePath />
+    </None>
+    <None Include="..\..\docs\img\gemstone-square-128.png" Link="gemstone-square-128.png" Visible="false">
+      <Pack>True</Pack>
+      <PackagePath />
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+    <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
+    <PackageReference Include="ProDotNetZip" Version="1.20.0" />
+    <PackageReference Include="System.Memory" Version="4.5.3" Condition="'$(TargetFramework)' == 'netstandard2.0'" />
+  </ItemGroup>
+
+  <Import Sdk="Microsoft.NET.Sdk" Project="Sdk.targets" />
+
+  <PropertyGroup Condition="'$(SIGNTOOL)' != ''">
+    <PostBuildEvent>$(SIGNTOOL) $(TargetPath)</PostBuildEvent>
+  </PropertyGroup>
+
+</Project>

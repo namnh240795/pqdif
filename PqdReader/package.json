@@ -1,0 +1,52 @@
+{
+  "name": "pqdif",
+  "version": "0.1.1",
+  "description": "Shared Node.js and browser PQDIF parser matching the Gemstone.PQDIF JSON export",
+  "keywords": [
+    "pqdif",
+    "pqd",
+    "power-quality",
+    "power-quality-data-interchange-format",
+    "electrical-measurements",
+    "waveform",
+    "rms",
+    "binary-parser",
+    "parser",
+    "json",
+    "nodejs",
+    "browser"
+  ],
+  "type": "commonjs",
+  "main": "./lib/pqdif.js",
+  "exports": {
+    ".": {
+      "types": "./lib/pqdif.d.ts",
+      "import": "./lib/pqdif.mjs",
+      "require": "./lib/pqdif.js"
+    },
+    "./browser": "./lib/pqdif.js"
+  },
+  "files": [
+    "lib/",
+    "pqdif.cjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test pqdif.test.cjs",
+    "parse": "node pqdif.cjs",
+    "prepublishOnly": "npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "module": "./lib/pqdif.mjs",
+  "types": "./lib/pqdif.d.ts",
+  "bin": {
+    "pqdif-to-json": "pqdif.cjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

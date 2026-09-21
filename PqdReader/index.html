@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PQDIF TRMS Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="./lib/pqdif.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; }
+  .header { background: linear-gradient(135deg, #1e293b, #334155); padding: 20px 30px; border-bottom: 1px solid #475569; }
+  .header h1 { font-size: 1.5rem; font-weight: 600; }
+  .header .meta { font-size: 0.85rem; color: #94a3b8; margin-top: 4px; }
+  .controls { padding: 16px 30px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .controls label { font-size: 0.85rem; color: #94a3b8; }
+  .controls select, .controls input[type=file], .controls button { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; }
+  .controls input[type=file] { padding: 4px; }
+  .charts { padding: 20px 30px; display: grid; gap: 24px; }
+  .chart-card { background: #1e293b; border-radius: 10px; border: 1px solid #334155; padding: 20px; }
+  .chart-card h2 { font-size: 1rem; font-weight: 500; margin-bottom: 12px; color: #cbd5e1; }
+  .chart-container { position: relative; height: 300px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; }
+  .stat { background: #0f172a; border-radius: 8px; padding: 12px 16px; border: 1px solid #334155; }
+  .stat .label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat .value { font-size: 1.25rem; font-weight: 600; margin-top: 2px; }
+  .phase-a { color: #f87171; }
+  .phase-b { color: #60a5fa; }
+  .phase-c { color: #34d399; }
+  .phase-n { color: #fbbf24; }
+  .loading { text-align: center; padding: 60px; color: #64748b; font-size: 1.1rem; }
+  .drop-zone { border: 2px dashed #475569; border-radius: 12px; padding: 40px; text-align: center; color: #64748b; margin: 20px 30px; cursor: pointer; transition: all 0.2s; }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #60a5fa; background: rgba(96,165,250,0.05); color: #94a3b8; }
+  .drop-zone p { font-size: 1rem; margin-bottom: 8px; }
+  .drop-zone small { font-size: 0.8rem; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>PQDIF TRMS Viewer</h1>
+  <div class="meta" id="meta">Select a .pqd file to begin</div>
+</div>
+
+<div class="controls" id="controls" style="display:none">
+  <div>
+    <label>Observation</label><br>
+    <select id="obsSelect" onchange="renderCharts()"></select>
+  </div>
+  <button type="button" onclick="downloadJson()">Download JSON</button>
+  <button type="button" onclick="document.getElementById('fileInput').click()">Open another file</button>
+</div>
+
+<div id="dropZone" class="drop-zone">
+  <p>Drop a .pqd file here or click to browse</p>
+  <small>Reads PQDIF binary format directly in the browser</small>
+  <input type="file" accept=".pqd" id="fileInput" style="display:none">
+</div>
+
+<div class="charts" id="charts"></div>
+
+<script>
+
+// ===== TRMS Viewer =====
+let LOGICAL = null;
+let activeCharts = [];
+
+const PHASE_COLORS = {
+  'A': { line: '#f87171', bg: 'rgba(248,113,113,0.1)' },
+  'B': { line: '#60a5fa', bg: 'rgba(96,165,250,0.1)' },
+  'C': { line: '#34d399', bg: 'rgba(52,211,153,0.1)' },
+  'N': { line: '#fbbf24', bg: 'rgba(251,191,36,0.1)' },
+};
+
+const PHASE_NAMES = { A: 'Phase A', B: 'Phase B', C: 'Phase C', N: 'Neutral' };
+
+function phaseForChannelName(name) {
+  if (!name) return null;
+  const m = name.match(/([UI])(\d)/);
+  if (!m) return null;
+  const num = parseInt(m[2]);
+  if (num === 1) return 'A';
+  if (num === 2) return 'B';
+  if (num === 3) return 'C';
+  if (num === 4) return 'N';
+  return null;
+}
+
+function guessUnitFromValues(values) {
+  if (!values || values.length === 0) return '';
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  if (avg > 100 && avg < 10000) return 'V';
+  if (avg > 0.1 && avg < 500) return 'A';
+  if (avg > 40 && avg < 70) return 'Hz';
+  return '';
+}
+
+function formatTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h${m.toString().padStart(2,'0')}m`;
+}
+
+function initApp() {
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) loadFile(fileInput.files[0]);
+  });
+}
+
+async function loadFile(file) {
+  document.getElementById('charts').innerHTML = '<div class="loading">Parsing PQDIF file...</div>';
+  try {
+    LOGICAL = Pqdif.parsePqdif(await file.arrayBuffer());
+
+    document.getElementById('dropZone').style.display = 'none';
+    document.getElementById('controls').style.display = 'flex';
+    document.getElementById('meta').textContent =
+      `${file.name} | ${LOGICAL.observations.length} observations | ${new Set(LOGICAL.observations.map(o => o.dataSource.name)).size} data sources`;
+
+    populateObservations();
+  } catch (e) {
+    console.error(e);
+    document.getElementById('charts').textContent = `Error parsing file: ${e.message}`;
+  }
+}
+
+function downloadJson() {
+  if (!LOGICAL) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(LOGICAL, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'pqdif_data.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function populateObservations() {
+  const sel = document.getElementById('obsSelect');
+  sel.innerHTML = '';
+  LOGICAL.observations.forEach((obs, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = obs.name || `Observation ${i + 1}`;
+    sel.appendChild(opt);
+  });
+
+  // Auto-select Voltage RMS
+  const vrmsIdx = LOGICAL.observations.findIndex(o =>
+    o.name && o.name.includes('Voltage RMS') && !o.name.includes('UB') && !o.name.includes('Symmetrical'));
+  if (vrmsIdx >= 0) sel.value = vrmsIdx;
+
+  renderCharts();
+}
+
+function renderCharts() {
+  activeCharts.forEach(chart => chart.destroy());
+  activeCharts = [];
+  const idx = parseInt(document.getElementById('obsSelect').value);
+  const obs = LOGICAL.observations[idx];
+  const container = document.getElementById('charts');
+  container.innerHTML = '';
+
+  if (!obs || !obs.channels || obs.channels.length === 0) {
+    container.innerHTML = '<div class="loading">No channel data in this observation</div>';
+    return;
+  }
+
+  // Classify channels by phase
+  const phaseChannels = {};
+  const otherChannels = [];
+
+  for (const ch of obs.channels) {
+    const phase = ({ AN: 'A', BN: 'B', CN: 'C', NG: 'N' })[ch.phase] || phaseForChannelName(ch.name);
+    if (phase) {
+      phaseChannels[phase] = ch;
+    } else if (ch.name) {
+      otherChannels.push(ch);
+    }
+  }
+
+  // Determine unit from observation name or channel data
+  let unit = '';
+  if (obs.name && obs.name.toLowerCase().includes('voltage')) unit = 'V';
+  else if (obs.name && obs.name.toLowerCase().includes('current')) unit = 'A';
+  else if (obs.name && obs.name.toLowerCase().includes('frequency')) unit = 'Hz';
+  else if (obs.name && obs.name.toLowerCase().includes('power')) unit = 'W';
+
+  // --- Main TRMS Chart ---
+  const phases = ['A', 'B', 'C', 'N'].filter(p => phaseChannels[p]);
+  if (phases.length > 0) {
+    const datasets = [];
+    let detectedUnit = unit;
+
+    for (const phase of phases) {
+      const ch = phaseChannels[phase];
+      if (!ch.series || ch.series.length < 2) continue;
+
+      const timeSeries = ch.series[0];
+      const rmsSeries = ch.series[1];
+      const minSeries = ch.series.length > 2 ? ch.series[2] : null;
+      const maxSeries = ch.series.length > 3 ? ch.series[3] : null;
+      const color = PHASE_COLORS[phase];
+
+      if (!timeSeries.values?.length || !rmsSeries.values?.length) continue;
+
+      // Detect unit from values
+      if (!detectedUnit) detectedUnit = guessUnitFromValues(rmsSeries.values);
+
+      // Min/Max band
+      if (minSeries?.values?.length && maxSeries?.values?.length) {
+        datasets.push({
+          label: `${PHASE_NAMES[phase]} Min`,
+          data: timeSeries.values.map((t, i) => ({ x: t, y: minSeries.values[i] })),
+          borderColor: 'transparent', backgroundColor: color.bg,
+          fill: '+1', pointRadius: 0, order: 2,
+        }, {
+          label: `${PHASE_NAMES[phase]} Max`,
+          data: timeSeries.values.map((t, i) => ({ x: t, y: maxSeries.values[i] })),
+          borderColor: 'transparent', backgroundColor: color.bg,
+          fill: false, pointRadius: 0, order: 2,
+        });
+      }
+
+      // RMS line
+      datasets.push({
+        label: `${PHASE_NAMES[phase]} RMS`,
+        data: timeSeries.values.map((t, i) => ({ x: t, y: rmsSeries.values[i] })),
+        borderColor: color.line, backgroundColor: color.line,
+        borderWidth: 2, pointRadius: 0, tension: 0.1, order: 1,
+      });
+    }
+
+    if (datasets.length > 0) {
+      if (!unit) unit = detectedUnit;
+      const card = createChartCard(container, `${obs.name} - TRMS`, unit);
+      activeCharts.push(new Chart(card.querySelector('canvas'), {
+        type: 'line', data: { datasets }, options: chartOptions(unit),
+      }));
+
+      // Stats
+      const statsDiv = document.createElement('div');
+      statsDiv.className = 'stats';
+      for (const phase of phases) {
+        const ch = phaseChannels[phase];
+        if (!ch.series || ch.series.length < 2) continue;
+        const rms = ch.series[1].values;
+        if (!rms?.length) continue;
+        const avg = rms.reduce((a, b) => a + b, 0) / rms.length;
+        const min = Math.min(...rms);
+        const max = Math.max(...rms);
+        const cls = `phase-${phase.toLowerCase()}`;
+        statsDiv.innerHTML += `
+          <div class="stat"><div class="label">${PHASE_NAMES[phase]} RMS Avg</div>
+            <div class="value ${cls}">${avg.toFixed(1)} ${unit}</div></div>
+          <div class="stat"><div class="label">${PHASE_NAMES[phase]} Min/Max</div>
+            <div class="value ${cls}">${min.toFixed(1)} / ${max.toFixed(1)} ${unit}</div></div>`;
+      }
+      container.appendChild(statsDiv);
+    }
+  }
+
+  // --- Other channels ---
+  for (const ch of otherChannels) {
+    if (!ch.series || ch.series.length < 2) continue;
+    const timeSeries = ch.series[0];
+    if (!timeSeries.values?.length) continue;
+
+    const datasets = [];
+    for (let si = 1; si < ch.series.length; si++) {
+      const s = ch.series[si];
+      if (!s.values || s.values.length === 0) continue;
+      const name = s.valueTypeName || Pqdif.seriesValueTypeNames[s.valueType] || `Series ${si}`;
+      datasets.push({
+        label: `${ch.name} ${name}`,
+        data: timeSeries.values.map((t, i) => ({ x: t, y: s.values[i] })),
+        borderColor: `hsl(${si * 80}, 70%, 60%)`, borderWidth: 1.5, pointRadius: 0, tension: 0.1,
+      });
+    }
+
+    if (datasets.length > 0) {
+      const chUnit = ch.series[1]?.units || '';
+      const card = createChartCard(container, ch.name, chUnit);
+      activeCharts.push(new Chart(card.querySelector('canvas'), {
+        type: 'line', data: { datasets }, options: chartOptions(chUnit),
+      }));
+    }
+  }
+}
+
+function createChartCard(container, title, unit) {
+  const card = document.createElement('div');
+  card.className = 'chart-card';
+  card.innerHTML = '<h2></h2><div class="chart-container"><canvas></canvas></div>';
+  card.querySelector('h2').textContent = title;
+  container.appendChild(card);
+  return card;
+}
+
+function chartOptions(unit) {
+  return {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+      tooltip: {
+        backgroundColor: '#1e293b', borderColor: '#475569', borderWidth: 1,
+        titleColor: '#e2e8f0', bodyColor: '#cbd5e1',
+        callbacks: {
+          title: (items) => {
+            const sec = items[0]?.parsed?.x ?? 0;
+            return formatTime(sec);
+          },
+          label: (item) => `${item.dataset.label}: ${item.parsed.y?.toFixed(2) ?? 'N/A'} ${unit}`,
+        },
+      },
+    },
+    scales: {
+      x: {
+        type: 'linear',
+        title: { display: true, text: 'Time', color: '#64748b' },
+        ticks: { color: '#64748b', callback: (v) => formatTime(v) },
+        grid: { color: '#1e293b' },
+      },
+      y: {
+        title: { display: true, text: unit || 'Value', color: '#64748b' },
+        ticks: { color: '#64748b' },
+        grid: { color: '#1e293b' },
+      },
+    },
+  };
+}
+
+if (typeof document !== 'undefined') initApp();
+</script>
+</body>
+</html>

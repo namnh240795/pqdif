@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PQDIF Data Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; }
+  .header { background: linear-gradient(135deg, #1e293b, #334155); padding: 20px 30px; border-bottom: 1px solid #475569; }
+  .header h1 { font-size: 1.5rem; font-weight: 600; }
+  .header .meta { font-size: 0.85rem; color: #94a3b8; margin-top: 4px; }
+  .controls { padding: 16px 30px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .controls label { font-size: 0.85rem; color: #94a3b8; }
+  .controls select, .controls input[type=range] { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; }
+  .controls input[type=range] { padding: 4px 0; width: 200px; }
+  .charts { padding: 20px 30px; display: grid; gap: 24px; }
+  .chart-card { background: #1e293b; border-radius: 10px; border: 1px solid #334155; padding: 20px; }
+  .chart-card h2 { font-size: 1rem; font-weight: 500; margin-bottom: 12px; color: #cbd5e1; }
+  .chart-container { position: relative; height: 300px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; }
+  .stat { background: #0f172a; border-radius: 8px; padding: 12px 16px; border: 1px solid #334155; }
+  .stat .label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat .value { font-size: 1.25rem; font-weight: 600; margin-top: 2px; }
+  .phase-a { color: #f87171; }
+  .phase-b { color: #60a5fa; }
+  .phase-c { color: #34d399; }
+  .phase-n { color: #fbbf24; }
+  .loading { text-align: center; padding: 60px; color: #64748b; font-size: 1.1rem; }
+  .drop-zone { border: 2px dashed #475569; border-radius: 12px; padding: 40px; text-align: center; color: #64748b; margin: 20px 30px; cursor: pointer; transition: all 0.2s; }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #60a5fa; background: rgba(96,165,250,0.05); color: #94a3b8; }
+  .drop-zone p { font-size: 1rem; margin-bottom: 8px; }
+  .drop-zone small { font-size: 0.8rem; }
+  .oscilloscope-card { border-color: rgba(34, 197, 94, 0.2); }
+  .oscilloscope-container { background: #0a0a1a; border-radius: 6px; border: 1px solid #1a3a2a; }
+  .trigger-info { font-size: 0.8rem; color: #22c55e; padding: 4px 8px; background: rgba(34, 197, 94, 0.08); border-radius: 4px; margin-bottom: 8px; font-family: monospace; }
+  .chart-tag { display: inline-block; font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; margin-left: 8px; vertical-align: middle; font-weight: 500; }
+  .tag-trend { background: rgba(52,211,153,0.15); color: #6ee7b7; }
+  .tag-harmonic { background: rgba(168,85,247,0.15); color: #c084fc; }
+  .tag-itic { background: rgba(239,68,68,0.15); color: #fca5a5; }
+  .tag-phasor { background: rgba(251,191,36,0.15); color: #fde68a; }
+  .tag-waveform { background: rgba(34,197,94,0.15); color: #86efac; }
+  .spectrum-controls { padding: 12px 20px; background: #0f172a; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px; display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .spectrum-controls label { font-size: 0.8rem; color: #94a3b8; }
+  .spectrum-controls select { background: #1e293b; color: #e2e8f0; border: 1px solid #475569; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; }
+  .spectrum-controls input[type=range] { width: 250px; }
+  .spectrum-controls .time-val { color: #94a3b8; font-size: 0.8rem; min-width: 60px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>PQDIF Data Viewer</h1>
+  <div class="meta" id="meta">Select a pqdif_data.json file to begin</div>
+</div>
+
+<div class="controls" id="controls" style="display:none">
+  <div>
+    <label>Observation</label><br>
+    <select id="obsSelect" onchange="renderCharts()"></select>
+  </div>
+</div>
+
+<div id="dropZone" class="drop-zone">
+  <p>Drop a pqdif_data.json file here or click to browse</p>
+  <small>Reads pre-parsed PQDIF JSON data</small>
+  <input type="file" accept=".json" id="fileInput" style="display:none">
+</div>
+
+<div class="charts" id="charts"></div>
+
+<script>
+// ===== Constants =====
+const PHASE_COLORS = {
+  'A': { line: '#f87171', bg: 'rgba(248,113,113,0.1)' },
+  'B': { line: '#60a5fa', bg: 'rgba(96,165,250,0.1)' },
+  'C': { line: '#34d399', bg: 'rgba(52,211,153,0.1)' },
+  'N': { line: '#fbbf24', bg: 'rgba(251,191,36,0.1)' },
+};
+const PHASE_NAMES = { A: 'Phase A', B: 'Phase B', C: 'Phase C', N: 'Neutral' };
+
+const GUID = {
+  WaveForm: '67f6af80-f753-11cf-9d89-0080c72e70a3',
+  ValueLog: '67f6af82-f753-11cf-9d89-0080c72e70a3',
+  Phasor: '67f6af81-f753-11cf-9d89-0080c72e70a3',
+  MagDurTime: '67f6af8d-f753-11cf-9d89-0080c72e70a3',
+};
+
+const CHAR = {
+  Time: 'a6b31add-b451-11d1-ae17-0060083a2628',
+  RMS: 'a6b31ae5-b451-11d1-ae17-0060083a2628',
+  Min: '5fd423aa-de44-4a13-bf5b-af9621bc6ffa',
+  Max: 'a6b31ae6-b451-11d1-ae17-0060083a2628',
+  HarmonicMag: '53be6ba8-0789-455b-9a95-da128683dda7',
+  ResidualVoltage: 'c8a86eca-cd40-4bee-9f1b-9e7a8d6ab34c',
+  Duration: 'b3729014-9797-460e-0ab5-d82ddbfbc269',
+  RefVoltage: '9789ceb3-8314-41ff-8565-b96cecd6ef48',
+};
+
+const ITIC_CURVES = {
+  upper: [
+    {d:0.00001,p:200},{d:0.0005,p:200},{d:0.001,p:180},{d:0.005,p:140},
+    {d:0.01,p:130},{d:0.02,p:120},{d:0.05,p:120},{d:0.1,p:110},
+    {d:0.5,p:110},{d:1,p:110},{d:10,p:110},{d:10,p:100},{d:1e6,p:100},
+  ],
+  lower: [
+    {d:1e6,p:100},{d:10,p:100},{d:10,p:90},{d:0.5,p:90},{d:0.2,p:80},
+    {d:0.1,p:70},{d:0.05,p:60},{d:0.02,p:50},{d:0.01,p:40},{d:0.005,p:30},
+    {d:0.001,p:0},{d:0.00001,p:0},
+  ],
+};
+
+// ===== Helpers =====
+function classifyObservation(obs) {
+  const name = (obs.name || '').toLowerCase();
+  const channels = obs.channels || [];
+  const firstQtyType = channels[0]?.quantityType || '';
+
+  if (channels.some(ch => ch.quantityType === GUID.WaveForm)) {
+    if (name.includes('transient')) return { type: 'event', chartType: 'oscilloscope', subType: 'transient' };
+    return { type: 'event', chartType: 'oscilloscope', subType: 'sagswell' };
+  }
+  if (firstQtyType === GUID.MagDurTime) return { type: 'rvc', chartType: 'itic', unit: 'V' };
+  if (name.includes('individual') && name.includes('harmonic') && !name.includes('inter')) {
+    const isPower = name.includes('power');
+    const isCurrent = name.includes('current');
+    return { type: 'harmonic', chartType: 'spectrum', unit: isPower ? 'W' : (isCurrent ? 'A' : 'V') };
+  }
+  if (name.includes('interharmonic')) {
+    const isCurrent = name.includes('current');
+    return { type: 'interharmonic', chartType: 'spectrum', unit: isCurrent ? 'A' : 'V' };
+  }
+  return { type: 'valuelog', chartType: 'trend' };
+}
+
+function chartTagForType(info) {
+  if (info.chartType === 'spectrum') return 'harmonic';
+  if (info.chartType === 'itic') return 'itic';
+  if (info.type === 'event') return 'waveform';
+  return 'trend';
+}
+
+function unitFromSeries(ch) {
+  if (!ch.series || ch.series.length < 2) return '';
+  const u = (ch.series[1].units || '').toLowerCase();
+  if (u === 'volts') return 'V';
+  if (u === 'amps') return 'A';
+  if (u === 'hertz') return 'Hz';
+  if (u === 'percent') return '%';
+  if (u === 'watts') return 'W';
+  if (u === 'vars') return 'VAR';
+  if (u === 'voltamps') return 'VA';
+  if (u === 'radianspersecond') return 'rad/s';
+  return ch.series[1].units || '';
+}
+
+function guessUnit(values) {
+  if (!values || values.length === 0) return '';
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  if (avg > 100 && avg < 10000) return 'V';
+  if (avg > 0.1 && avg < 500) return 'A';
+  if (avg > 40 && avg < 70) return 'Hz';
+  return '';
+}
+
+function formatTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h${m.toString().padStart(2,'0')}m`;
+}
+
+function formatLogTick(val) {
+  if (val >= 1) return `${val}s`;
+  if (val >= 0.001) return `${(val*1000).toFixed(0)}ms`;
+  return `${(val*1e6).toFixed(0)}us`;
+}
+
+function phaseForChannel(ch) {
+  const name = (ch.name || '').toUpperCase();
+  const phase = (ch.phase || '').toUpperCase();
+  if (phase.includes('A') && !phase.includes('B') && !phase.includes('C')) return 'A';
+  if (phase.includes('B') && !phase.includes('A') && !phase.includes('C')) return 'B';
+  if (phase.includes('C') && !phase.includes('A') && !phase.includes('B')) return 'C';
+  if (phase.includes('N') || phase.includes('NEUTRAL')) return 'N';
+  if (name === 'U1' || name === 'I1') return 'A';
+  if (name === 'U2' || name === 'I2') return 'B';
+  if (name === 'U3' || name === 'I3') return 'C';
+  if (name === 'U4' || name === 'I4' || name === 'IN') return 'N';
+  return null;
+}
+
+function phaseForWaveformChannel(ch) {
+  const name = (ch.name || '').toUpperCase();
+  const m = name.match(/WF_([UI])(\d)/);
+  if (m) {
+    const n = parseInt(m[2]);
+    return n===1?'A':n===2?'B':n===3?'C':'N';
+  }
+  return phaseForChannel(ch);
+}
+
+function decimateLTTB(data, threshold) {
+  if (data.length <= threshold) return data;
+  const sampled = [data[0]];
+  const bs = (data.length - 2) / (threshold - 2);
+  let a = 0;
+  for (let i = 0; i < threshold - 2; i++) {
+    const rs = Math.floor((i+1)*bs)+1, re = Math.min(Math.floor((i+2)*bs)+1, data.length);
+    let ax=0,ay=0,c=0;
+    for (let j=rs;j<re;j++){ax+=data[j].x;ay+=data[j].y;c++;}
+    if(c>0){ax/=c;ay/=c;}
+    const cs=Math.floor(i*bs)+1, ce=Math.min(Math.floor((i+1)*bs)+1, data.length);
+    let ma=-1,mi=cs;
+    for(let j=cs;j<ce;j++){
+      const area=Math.abs((data[a].x-ax)*(data[j].y-data[a].y)-(data[a].x-data[j].x)*(ay-data[a].y));
+      if(area>ma){ma=area;mi=j;}
+    }
+    sampled.push(data[mi]);a=mi;
+  }
+  sampled.push(data[data.length-1]);
+  return sampled;
+}
+
+function chartOptions(unit) {
+  return {
+    responsive:true, maintainAspectRatio:false,
+    interaction:{mode:'index',intersect:false},
+    plugins:{
+      legend:{labels:{color:'#94a3b8',font:{size:11}}},
+      tooltip:{backgroundColor:'#1e293b',borderColor:'#475569',borderWidth:1,titleColor:'#e2e8f0',bodyColor:'#cbd5e1',
+        callbacks:{title:items=>formatTime(items[0]?.parsed?.x??0),label:item=>`${item.dataset.label}: ${item.parsed.y?.toFixed(2)??'N/A'} ${unit}`}},
+    },
+    scales:{
+      x:{type:'linear',title:{display:true,text:'Time',color:'#64748b'},ticks:{color:'#64748b',callback:v=>formatTime(v)},grid:{color:'#1e293b'}},
+      y:{title:{display:true,text:unit||'Value',color:'#64748b'},ticks:{color:'#64748b'},grid:{color:'#1e293b'}},
+    },
+  };
+}
+
+let DATA = null;
+
+function initApp() {
+  const dz = document.getElementById('dropZone');
+  const fi = document.getElementById('fileInput');
+  dz.addEventListener('click', () => fi.click());
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+  dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('dragover'); if(e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]); });
+  fi.addEventListener('change', () => { if(fi.files.length) loadFile(fi.files[0]); });
+}
+
+async function loadFile(file) {
+  document.getElementById('charts').innerHTML = '<div class="loading">Loading JSON...</div>';
+  try {
+    const text = await file.text();
+    DATA = JSON.parse(text);
+    document.getElementById('dropZone').style.display = 'none';
+    document.getElementById('controls').style.display = 'flex';
+    document.getElementById('meta').textContent = `${file.name} | ${DATA.observations.length} observations | Created: ${DATA.creationTime||'N/A'}`;
+    populateObservations();
+  } catch(e) {
+    document.getElementById('charts').innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+  }
+}
+
+function populateObservations() {
+  const sel = document.getElementById('obsSelect');
+  sel.innerHTML = '';
+  DATA.observations.forEach((obs, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    const info = classifyObservation(obs);
+    const tag = chartTagForType(info);
+    const labels = {trend:'Trend',harmonic:'Harmonic',itic:'ITIC',waveform:'Waveform'};
+    opt.textContent = (obs.name||`Observation ${i+1}`) + ` [${labels[tag]||tag}]`;
+    sel.appendChild(opt);
+  });
+  renderCharts();
+}
+
+// ===== Main Dispatcher =====
+function renderCharts() {
+  const idx = parseInt(document.getElementById('obsSelect').value);
+  const obs = DATA.observations[idx];
+  const container = document.getElementById('charts');
+  container.innerHTML = '';
+  if (!obs || !obs.channels || obs.channels.length === 0) {
+    container.innerHTML = '<div class="loading">No channel data in this observation</div>';
+    return;
+  }
+  const info = classifyObservation(obs);
+  switch (info.chartType) {
+    case 'spectrum': renderHarmonicSpectrum(container, obs, info); break;
+    case 'itic': renderITIC(container, obs, info); break;
+    case 'oscilloscope': renderOscilloscopeView(container, obs, info); break;
+    default: renderTrendCharts(container, obs, info); break;
+  }
+}
+
+// ===== Trend Charts =====
+function renderTrendCharts(container, obs, info) {
+  const phaseChannels = {};
+  const otherChannels = [];
+  for (const ch of obs.channels) {
+    if (ch.quantityType === GUID.WaveForm) continue;
+    const phase = phaseForChannel(ch);
+    if (phase) phaseChannels[phase] = ch;
+    else if (ch.name !== 'Flagging') otherChannels.push(ch);
+  }
+
+  let unit = '';
+  if (obs.name?.toLowerCase().includes('voltage')) unit = 'V';
+  else if (obs.name?.toLowerCase().includes('current')) unit = 'A';
+  else if (obs.name?.toLowerCase().includes('frequency')) unit = 'Hz';
+
+  const phases = ['A','B','C','N'].filter(p => phaseChannels[p]);
+  if (phases.length > 0) {
+    const datasets = [];
+    let detectedUnit = unit;
+    for (const phase of phases) {
+      const ch = phaseChannels[phase];
+      if (!ch.series || ch.series.length < 2) continue;
+      const ts = ch.series[0], vs = ch.series[1];
+      const color = PHASE_COLORS[phase];
+      if (!ts.values || !vs.values) continue;
+      if (!detectedUnit) detectedUnit = unitFromSeries(ch) || guessUnit(vs.values);
+
+      const minS = ch.series.find(s => s.characteristic === CHAR.Min);
+      const maxS = ch.series.find(s => s.characteristic === CHAR.Max);
+      if (minS?.values && maxS?.values) {
+        datasets.push({
+          label:`${PHASE_NAMES[phase]} Range`,
+          data:ts.values.map((t,i)=>({x:t,y:[minS.values[i],maxS.values[i]]})),
+          borderColor:'transparent',backgroundColor:color.bg,fill:true,pointRadius:0,order:2,
+        });
+      }
+      datasets.push({
+        label:`${PHASE_NAMES[phase]} RMS`,
+        data:ts.values.map((t,i)=>({x:t,y:vs.values[i]})),
+        borderColor:color.line,backgroundColor:color.line,borderWidth:2,pointRadius:0,tension:0.1,order:1,
+      });
+    }
+    if (datasets.length > 0) {
+      if (!unit) unit = detectedUnit;
+      const card = createChartCard(container, `${obs.name}`, unit, 'trend');
+      new Chart(card.querySelector('canvas'),{type:'line',data:{datasets},options:chartOptions(unit)});
+      const statsDiv = document.createElement('div');
+      statsDiv.className = 'stats';
+      for (const phase of phases) {
+        const ch = phaseChannels[phase];
+        if (!ch.series || ch.series.length < 2) continue;
+        const vals = ch.series[1].values;
+        if (!vals) continue;
+        const avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+        const mn = Math.min(...vals), mx = Math.max(...vals);
+        const cls = `phase-${phase.toLowerCase()}`;
+        statsDiv.innerHTML += `
+          <div class="stat"><div class="label">${PHASE_NAMES[phase]} Avg</div><div class="value ${cls}">${avg.toFixed(1)} ${unit}</div></div>
+          <div class="stat"><div class="label">${PHASE_NAMES[phase]} Min/Max</div><div class="value ${cls}">${mn.toFixed(1)} / ${mx.toFixed(1)} ${unit}</div></div>`;
+      }
+      container.appendChild(statsDiv);
+    }
+  }
+
+  for (const ch of otherChannels) {
+    if (!ch.series || ch.series.length < 2) continue;
+    const ts = ch.series[0];
+    if (!ts.values) continue;
+    const datasets = [];
+    for (let si=1;si<ch.series.length;si++) {
+      const s = ch.series[si];
+      if (!s.values || s.values.length === 0) continue;
+      datasets.push({
+        label:`${ch.name} ${s.units||''}`,
+        data:ts.values.map((t,i)=>({x:t,y:s.values[i]})),
+        borderColor:`hsl(${si*80},70%,60%)`,borderWidth:1.5,pointRadius:0,tension:0.1,
+      });
+    }
+    if (datasets.length > 0) {
+      const u = unitFromSeries(ch) || guessUnit(ch.series[1]?.values||[]);
+      const card = createChartCard(container, ch.name, u, 'trend');
+      new Chart(card.querySelector('canvas'),{type:'line',data:{datasets},options:chartOptions(u)});
+    }
+  }
+}
+
+// ===== Oscilloscope =====
+function renderOscilloscopeView(container, obs, info) {
+  const wfChannels = obs.channels.filter(ch => ch.quantityType === GUID.WaveForm);
+  renderOscilloscope(container, obs, wfChannels);
+  if (info.subType === 'sagswell') renderPhasor(container, obs, wfChannels);
+}
+
+function renderOscilloscope(container, obs, waveformChannels) {
+  const voltageChannels = [], currentChannels = [];
+  for (const ch of waveformChannels) {
+    const phase = phaseForWaveformChannel(ch);
+    if (!ch.series || ch.series.length < 2) continue;
+    if (!ch.series[0].values || !ch.series[1].values) continue;
+    const entry = {phase, channel:ch, name:ch.name};
+    if (ch.quantityMeasured === 'Voltage') voltageChannels.push(entry);
+    else if (ch.quantityMeasured === 'Current') currentChannels.push(entry);
+  }
+  if (voltageChannels.length > 0) createScopeChart(container, obs, voltageChannels, 'Voltage', 'V');
+  if (currentChannels.length > 0) createScopeChart(container, obs, currentChannels, 'Current', 'A');
+}
+
+function createScopeChart(container, obs, channelEntries, title, unit) {
+  const maxPoints = 2000;
+  const datasets = [];
+  for (const entry of channelEntries) {
+    const ts = entry.channel.series[0], vs = entry.channel.series[1];
+    let points = ts.values.map((t,i)=>({x:t*1000,y:vs.values[i]}));
+    if (points.length > maxPoints) points = decimateLTTB(points, maxPoints);
+    const color = PHASE_COLORS[entry.phase]||{line:'#22c55e'};
+    datasets.push({
+      label:`${PHASE_NAMES[entry.phase]||entry.name}`,data:points,
+      borderColor:color.line,borderWidth:1.5,pointRadius:0,tension:0,order:0,
+    });
+  }
+  const scopeOptions = {
+    responsive:true,maintainAspectRatio:false,animation:false,
+    interaction:{mode:'nearest',intersect:false},
+    plugins:{
+      legend:{labels:{color:'#94a3b8',font:{size:11}},position:'top'},
+      tooltip:{backgroundColor:'#1a1a2e',borderColor:'#333',borderWidth:1,titleColor:'#e0e0e0',bodyColor:'#b0b0b0',
+        callbacks:{title:items=>`${(items[0]?.parsed?.x??0).toFixed(2)} ms`,label:item=>`${item.dataset.label}: ${item.parsed.y?.toFixed(1)??'N/A'} ${unit}`}},
+    },
+    scales:{
+      x:{type:'linear',title:{display:true,text:'Time (ms)',color:'#64748b'},ticks:{color:'#64748b',callback:v=>`${v.toFixed(1)}`},grid:{color:'rgba(100,116,139,0.15)',lineWidth:1}},
+      y:{title:{display:true,text:`${title} (${unit})`,color:'#64748b'},ticks:{color:'#64748b'},grid:{color:'rgba(100,116,139,0.15)',lineWidth:1}},
+    },
+  };
+  const card = document.createElement('div');
+  card.className = 'chart-card oscilloscope-card';
+  let triggerInfo = '';
+  if (obs.triggerMethod && obs.triggerMethod !== 'None') {
+    triggerInfo = `<div class="trigger-info">Trigger: ${obs.triggerMethod}`;
+    if (obs.disturbanceCategoryName) triggerInfo += ` | ${obs.disturbanceCategoryName}`;
+    triggerInfo += '</div>';
+  }
+  card.innerHTML = `<h2>${obs.name} - ${title} Waveform</h2>${triggerInfo}<div class="chart-container oscilloscope-container"><canvas></canvas></div>`;
+  container.appendChild(card);
+  new Chart(card.querySelector('canvas'),{type:'line',data:{datasets},options:scopeOptions});
+  const statsDiv = document.createElement('div');
+  statsDiv.className = 'stats';
+  for (const entry of channelEntries) {
+    const vals = entry.channel.series[1].values;
+    if (!vals || vals.length===0) continue;
+    const peak = Math.max(...vals.map(Math.abs));
+    const mn = Math.min(...vals), mx = Math.max(...vals);
+    const rms = Math.sqrt(vals.reduce((s,v)=>s+v*v,0)/vals.length);
+    const cls = `phase-${entry.phase.toLowerCase()}`;
+    statsDiv.innerHTML += `
+      <div class="stat"><div class="label">${PHASE_NAMES[entry.phase]||entry.name} Peak</div><div class="value ${cls}">${peak.toFixed(1)} ${unit}</div></div>
+      <div class="stat"><div class="label">${PHASE_NAMES[entry.phase]||entry.name} RMS</div><div class="value ${cls}">${rms.toFixed(1)} ${unit}</div></div>
+      <div class="stat"><div class="label">${PHASE_NAMES[entry.phase]||entry.name} Min/Max</div><div class="value ${cls}">${mn.toFixed(1)} / ${mx.toFixed(1)} ${unit}</div></div>`;
+  }
+  container.appendChild(statsDiv);
+}
+
+// ===== Harmonic Spectrum =====
+function parseHarmonicChannels(channels) {
+  const dataCh = channels.filter(ch => ch.name !== 'Flagging');
+  if (dataCh.length === 0) return {orders:{},numOrders:0,numTimePoints:0};
+  const phasesPerOrder = 4;
+  const numOrders = Math.floor(dataCh.length / phasesPerOrder);
+  const orders = {};
+  let numTimePoints = 0;
+  for (let oi=0;oi<numOrders;oi++) {
+    orders[oi] = {};
+    for (let pi=0;pi<phasesPerOrder;pi++) {
+      const idx = oi*phasesPerOrder+pi;
+      if (idx >= dataCh.length) break;
+      const ch = dataCh[idx];
+      const phase = phaseForChannel(ch);
+      if (!phase) continue;
+      const ts = ch.series[0], ms = ch.series[1];
+      if (ts?.values && ms?.values) {
+        orders[oi][phase] = {time:ts.values, magnitude:ms.values};
+        numTimePoints = Math.max(numTimePoints, ts.values.length);
+      }
+    }
+  }
+  return {orders, numOrders, numTimePoints};
+}
+
+function renderHarmonicSpectrum(container, obs, info) {
+  const {orders, numOrders, numTimePoints} = parseHarmonicChannels(obs.channels);
+  if (numOrders === 0) { container.innerHTML = '<div class="loading">No harmonic data</div>'; return; }
+
+  const ctrlDiv = document.createElement('div');
+  ctrlDiv.className = 'spectrum-controls';
+  ctrlDiv.innerHTML = `
+    <div><label>Time</label><br><input type="range" id="specTime" min="0" max="${numTimePoints-1}" value="0" oninput="updateSpectrum()"><span class="time-val" id="specTimeVal"></span></div>
+    <div><label>Display</label><br><select id="specMode" onchange="updateSpectrum()"><option value="absolute">Absolute</option><option value="relative">% of Fundamental</option></select></div>
+    <div><label>Phase</label><br><select id="specPhase" onchange="updateSpectrum()"><option value="A">Phase A</option><option value="B">Phase B</option><option value="C">Phase C</option><option value="N">Neutral</option></select></div>
+  `;
+  container.appendChild(ctrlDiv);
+
+  const card = createChartCard(container, `${obs.name} - Harmonic Spectrum`, info.unit, 'harmonic');
+  const canvas = card.querySelector('canvas');
+  window._specState = {orders, numOrders, obs, info, canvas, chart: null};
+  updateSpectrum();
+}
+
+function updateSpectrum() {
+  const st = window._specState;
+  if (!st) return;
+  const timeIdx = parseInt(document.getElementById('specTime')?.value||0);
+  const mode = document.getElementById('specMode')?.value||'absolute';
+  const phase = document.getElementById('specPhase')?.value||'A';
+  const timeLabel = document.getElementById('specTimeVal');
+  if (timeLabel && st.orders[0]?.[phase]?.time) {
+    const t = st.orders[0][phase].time[timeIdx]||0;
+    timeLabel.textContent = formatTime(t);
+  }
+
+  const labels = [], mags = [];
+  let fund = 1;
+  if (st.orders[1]?.[phase]?.magnitude) fund = st.orders[1][phase].magnitude[timeIdx]||1;
+  if (fund === 0) fund = 1;
+
+  for (let i=0;i<st.numOrders;i++) {
+    labels.push(`H${i}`);
+    let m = (st.orders[i]?.[phase]?.magnitude) ? st.orders[i][phase].magnitude[timeIdx] : 0;
+    if (mode==='relative' && i>0) m = (m/fund)*100;
+    mags.push(m);
+  }
+
+  const datasets = [{
+    label: mode==='relative'?`${PHASE_NAMES[phase]||phase} (% of H1)`:`${PHASE_NAMES[phase]||phase} Magnitude`,
+    data: mags,
+    backgroundColor: PHASE_COLORS[phase]?.line||'#888',
+    borderColor: PHASE_COLORS[phase]?.line||'#888',
+    borderWidth: 1,
+  }];
+
+  const opts = {
+    responsive:true,maintainAspectRatio:false,
+    plugins:{
+      legend:{labels:{color:'#94a3b8',font:{size:11}}},
+      tooltip:{backgroundColor:'#1e293b',borderColor:'#475569',borderWidth:1,titleColor:'#e2e8f0',bodyColor:'#cbd5e1',
+        callbacks:{label:item=>`${item.dataset.label}: ${item.parsed.y?.toFixed(2)} ${mode==='relative'?'%':st.info.unit}`}},
+    },
+    scales:{
+      x:{title:{display:true,text:'Harmonic Order',color:'#64748b'},ticks:{color:'#64748b',maxRotation:45},grid:{color:'#1e293b'}},
+      y:{title:{display:true,text:mode==='relative'?'% of Fundamental':st.info.unit,color:'#64748b'},ticks:{color:'#64748b'},grid:{color:'#1e293b'},beginAtZero:true},
+    },
+  };
+
+  if (st.chart) st.chart.destroy();
+  st.chart = new Chart(st.canvas, {type:'bar',data:{labels,datasets},options:opts});
+}
+
+// ===== ITIC =====
+function renderITIC(container, obs, info) {
+  const events = [];
+  for (const ch of obs.channels) {
+    if (ch.name === 'Flagging') continue;
+    const phase = phaseForChannel(ch);
+    const ts = ch.series[0], ms = ch.series[1], ds = ch.series[2], rs = ch.series[3];
+    if (!ts?.values) continue;
+    for (let i=0;i<ts.values.length;i++) {
+      const mag = ms?.values?.[i]||0;
+      const dur = ds?.values?.[i]||0;
+      const ref = Math.abs(rs?.values?.[i]||0);
+      const pct = ref > 0 ? ((ref+mag)/ref)*100 : 100;
+      events.push({phase,time:ts.values[i],magnitude:mag,duration:dur,referenceVoltage:ref,percentOfNominal:pct});
+    }
+  }
+
+  const card = createChartCard(container, `${obs.name} - ITIC Chart`, '%', 'itic');
+  const datasets = [];
+
+  datasets.push({
+    label:'ITIC Upper',data:ITIC_CURVES.upper.map(p=>({x:p.d,y:p.p})),
+    borderColor:'#ef4444',borderWidth:2,borderDash:[6,3],pointRadius:0,fill:false,order:1,
+  });
+  datasets.push({
+    label:'ITIC Lower',data:ITIC_CURVES.lower.map(p=>({x:p.d,y:p.p})),
+    borderColor:'#ef4444',borderWidth:2,borderDash:[6,3],pointRadius:0,fill:false,order:1,
+  });
+  datasets.push({
+    label:'Acceptable',data:ITIC_CURVES.lower.map(p=>({x:p.d,y:p.p})),
+    borderColor:'transparent',backgroundColor:'rgba(34,197,94,0.08)',fill:'+1',pointRadius:0,order:3,
+  });
+
+  const phasesInData = [...new Set(events.map(e=>e.phase).filter(Boolean))];
+  for (const phase of phasesInData) {
+    const pe = events.filter(e=>e.phase===phase);
+    const color = PHASE_COLORS[phase]||{line:'#fff'};
+    datasets.push({
+      label:`${PHASE_NAMES[phase]||phase}`,
+      data:pe.map(e=>({x:e.duration||0.00001,y:e.percentOfNominal})),
+      borderColor:color.line,backgroundColor:color.line,
+      pointRadius:5,pointStyle:'circle',showLine:false,order:0,
+    });
+  }
+
+  new Chart(card.querySelector('canvas'),{
+    type:'scatter',
+    data:{datasets},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{
+        legend:{labels:{color:'#94a3b8',font:{size:11}}},
+        tooltip:{backgroundColor:'#1e293b',borderColor:'#475569',borderWidth:1,titleColor:'#e2e8f0',bodyColor:'#cbd5e1',
+          callbacks:{title:items=>`Duration: ${items[0]?.parsed?.x?.toFixed(4)}s`,label:item=>`${item.dataset.label}: ${item.parsed.y?.toFixed(1)}%`}},
+      },
+      scales:{
+        x:{type:'logarithmic',title:{display:true,text:'Duration (s)',color:'#64748b'},ticks:{color:'#64748b',callback:v=>formatLogTick(v)},grid:{color:'#1e293b'},min:0.00001,max:10},
+        y:{title:{display:true,text:'Voltage (% of Nominal)',color:'#64748b'},ticks:{color:'#64748b'},grid:{color:'#1e293b'},min:0,max:200},
+      },
+    },
+  });
+
+  if (events.every(e=>e.duration===0)) {
+    const note = document.createElement('div');
+    note.style.cssText='color:#fbbf24;font-size:0.8rem;margin-top:8px;';
+    note.textContent='Note: Duration data unavailable in this file. Events plotted at minimum duration.';
+    container.appendChild(note);
+  }
+
+  const statsDiv = document.createElement('div');
+  statsDiv.className = 'stats';
+  for (const phase of phasesInData) {
+    const pe = events.filter(e=>e.phase===phase);
+    const avg = pe.reduce((s,e)=>s+e.percentOfNominal,0)/pe.length;
+    const cls = `phase-${phase.toLowerCase()}`;
+    statsDiv.innerHTML += `
+      <div class="stat"><div class="label">${PHASE_NAMES[phase]||phase} Events</div><div class="value ${cls}">${pe.length}</div></div>
+      <div class="stat"><div class="label">${PHASE_NAMES[phase]||phase} Avg %V</div><div class="value ${cls}">${avg.toFixed(1)}%</div></div>`;
+  }
+  container.appendChild(statsDiv);
+}
+
+// ===== Phasor =====
+function renderPhasor(container, obs, waveformChannels) {
+  const rmsChannels = obs.channels.filter(ch => ch.name?.startsWith('SS_RMS_'));
+  if (rmsChannels.length === 0) return;
+
+  const phasors = {};
+  for (const ch of rmsChannels) {
+    const m = ch.name.match(/SS_RMS_([UI])(\d)/);
+    if (!m) continue;
+    const type = m[1], num = parseInt(m[2]);
+    const phase = num===1?'A':num===2?'B':num===3?'C':'N';
+    const vals = ch.series[1]?.values;
+    const times = ch.series[0]?.values;
+    if (!vals || !times || vals.length===0) continue;
+    const zi = times.reduce((best,t,i)=>Math.abs(t)<Math.abs(times[best])?i:best,0);
+    phasors[`${type}_${phase}`] = vals[zi];
+  }
+
+  const labels = ['Phase A','Phase B','Phase C'];
+  const vData = ['A','B','C'].map(p=>phasors[`U_${p}`]||0);
+  const iData = ['A','B','C'].map(p=>phasors[`I_${p}`]||0);
+  const maxV = Math.max(...vData,1);
+  const maxI = Math.max(...iData,1);
+
+  const datasets = [];
+  if (vData.some(v=>v>0)) {
+    datasets.push({
+      label:'Voltage (normalized)',data:vData.map(v=>(v/maxV)*100),
+      borderColor:'#f87171',backgroundColor:'rgba(248,113,113,0.15)',borderWidth:2,pointRadius:4,
+    });
+  }
+  if (iData.some(v=>v>0)) {
+    datasets.push({
+      label:'Current (normalized)',data:iData.map(v=>(v/maxI)*100),
+      borderColor:'#60a5fa',backgroundColor:'rgba(96,165,250,0.15)',borderWidth:2,pointRadius:4,
+    });
+  }
+  if (datasets.length === 0) return;
+
+  const card = createChartCard(container, `${obs.name} - Phasor Diagram`, '', 'phasor');
+  new Chart(card.querySelector('canvas'),{
+    type:'radar',
+    data:{labels,datasets},
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      scales:{r:{beginAtZero:true,max:110,ticks:{color:'#64748b',backdropColor:'transparent',stepSize:25},grid:{color:'#334155'},pointLabels:{color:'#94a3b8',font:{size:12}},angleLines:{color:'#334155'}}},
+      plugins:{legend:{labels:{color:'#94a3b8'}},
+        tooltip:{callbacks:{label:item=>{const p=['A','B','C'][item.dataIndex];const v=vData[item.dataIndex];const c=iData[item.dataIndex];return `V: ${v.toFixed(1)}V  I: ${c.toFixed(2)}A`;}}}},
+    },
+  });
+
+  const statsDiv = document.createElement('div');
+  statsDiv.className = 'stats';
+  for (let i=0;i<3;i++) {
+    const p = ['A','B','C'][i];
+    const cls = `phase-${p.toLowerCase()}`;
+    statsDiv.innerHTML += `
+      <div class="stat"><div class="label">Phase ${p} V</div><div class="value ${cls}">${vData[i].toFixed(1)} V</div></div>
+      <div class="stat"><div class="label">Phase ${p} I</div><div class="value ${cls}">${iData[i].toFixed(2)} A</div></div>`;
+  }
+  container.appendChild(statsDiv);
+}
+
+// ===== Card Builder =====
+function createChartCard(container, title, unit, tagType) {
+  const card = document.createElement('div');
+  card.className = 'chart-card' + (tagType ? ` ${tagType}-card` : '');
+  const tag = tagType ? `<span class="chart-tag tag-${tagType}">${tagType.toUpperCase()}</span>` : '';
+  card.innerHTML = `<h2>${title}${tag}</h2><div class="chart-container"><canvas></canvas></div>`;
+  container.appendChild(card);
+  return card;
+}
+
+initApp();
+</script>
+</body>
+</html>
