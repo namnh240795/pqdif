@@ -34,6 +34,41 @@
   .drop-zone:hover, .drop-zone.dragover { border-color: #60a5fa; background: rgba(96,165,250,0.05); color: #94a3b8; }
   .drop-zone p { font-size: 1rem; margin-bottom: 8px; }
   .drop-zone small { font-size: 0.8rem; }
+
+  .mapping { margin: 20px 30px; padding: 22px; background: #1e293b; border: 1px solid #475569; border-radius: 12px; }
+  .mapping summary { cursor: pointer; font-size: 1.1rem; font-weight: 600; }
+  .mapping summary:focus-visible { outline: 2px solid #60a5fa; outline-offset: 6px; }
+  .mapping p { color: #cbd5e1; line-height: 1.6; margin: 14px 0; max-width: 100ch; }
+  .mapping h3 { font-size: 1rem; margin: 22px 0 12px; }
+  .mapping code { overflow-wrap: anywhere; color: #bae6fd; }
+  .flow-row { display: flex; align-items: stretch; gap: 12px; }
+  .flow-node { flex: 1; min-width: 0; padding: 16px; border: 1px solid #64748b; border-radius: 8px; background: #0f172a; }
+  .flow-node strong { display: block; color: #f1f5f9; margin-bottom: 8px; }
+  .flow-node small { display: block; color: #cbd5e1; line-height: 1.6; margin-top: 8px; }
+  .flow-node.source { border-top: 3px solid #60a5fa; }
+  .flow-node.chart { border-top: 3px solid #34d399; }
+  .flow-node.event { border-top: 3px solid #fbbf24; }
+  .flow-arrow { align-self: center; color: #94a3b8; font-size: 1.5rem; }
+  .flow-down { text-align: center; color: #94a3b8; padding: 10px; line-height: 1.5; }
+  .mapping .flow-note { font-size: 0.85rem; color: #94a3b8; }
+  .time-flow { list-style: none; counter-reset: time-step; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  .time-flow li { counter-increment: time-step; }
+  .time-flow li::before { content: counter(time-step); display: inline-block; color: #60a5fa; font-weight: 700; margin-bottom: 10px; }
+  @media (max-width: 760px) {
+    .mapping { margin: 16px; padding: 16px; }
+    .flow-row { flex-direction: column; }
+    .flow-arrow { transform: rotate(90deg); }
+    .time-flow { grid-template-columns: 1fr; }
+  }
+  .series-panel { margin: 20px 30px; padding: 20px; background: #1e293b; border: 1px solid #475569; border-radius: 10px; }
+  .series-panel h2 { font-size: 1.1rem; }
+  .series-panel p, .series-note { margin: 12px 0; color: #cbd5e1; font-size: .85rem; line-height: 1.6; }
+  .series-scroll { overflow: auto; max-height: 350px; }
+  .series-panel table { width: 100%; border-collapse: collapse; font-size: .8rem; text-align: left; }
+  .series-panel th, .series-panel td { padding: 10px; border-bottom: 1px solid #334155; }
+  .series-panel th { position: sticky; top: 0; background: #0f172a; white-space: nowrap; }
+  .series-panel tr:hover { background: #334155; }
+  .series-panel input { accent-color: #60a5fa; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -45,7 +80,16 @@
 
 <div class="controls" id="controls" style="display:none">
   <div>
-    <label>Observation</label><br>
+    <label for="chartType">Chart type</label><br>
+    <select id="chartType" onchange="updateObservationOptions()">
+      <option value="trend">Trend</option>
+      <option value="osc">Oscilloscope (OSC)</option>
+      <option value="harmonics">Harmonics</option>
+      <option value="itic">Magnitude–Duration / ITIC</option>
+    </select>
+  </div>
+  <div>
+    <label for="obsSelect">Observation</label><br>
     <select id="obsSelect" onchange="renderCharts()"></select>
   </div>
   <button type="button" onclick="downloadJson()">Download JSON</button>
@@ -58,7 +102,72 @@
   <input type="file" accept=".pqd" id="fileInput" style="display:none">
 </div>
 
-<div class="charts" id="charts"></div>
+<section id="seriesPanel" class="series-panel" style="display:none" aria-labelledby="seriesHeading">
+  <h2 id="seriesHeading">Relevant data series</h2>
+  <p id="seriesSummary" aria-live="polite"></p>
+  <div class="series-scroll" tabindex="0" role="region" aria-label="Matching series table">
+    <table><thead><tr><th>Select</th><th>ID</th><th>Observation</th><th>Channel</th><th>Phase</th><th>Quantity type</th><th>Value type</th><th>Unit</th><th>Samples</th></tr></thead><tbody id="seriesRows"></tbody></table>
+  </div>
+</section>
+<div class="charts" id="charts" aria-live="polite"></div>
+
+<details class="mapping" open>
+  <summary>PQDIF chart data mapping</summary>
+  <p>How an imported <code>.pqd</code> file becomes chart data, based on the supplied mapping document. This reference describes its File Analysis architecture; this page’s current viewer uses the JavaScript library and Chart.js. Live Modbus register data follows a separate path.</p>
+
+  <section aria-labelledby="flow-heading">
+    <h3 id="flow-heading">1. Decode and normalize</h3>
+    <div class="flow-row">
+      <div class="flow-node source"><strong>Import .pqd</strong><small>Binary file bytes containing observations, channels, and series.</small></div>
+      <span class="flow-arrow" aria-hidden="true">→</span>
+      <div class="flow-node source"><strong>Physical parser</strong><code>parse_pqdif_bytes()</code><small>Decode PQDIF elements.</small></div>
+      <span class="flow-arrow" aria-hidden="true">→</span>
+      <div class="flow-node source"><strong>Semantic parser</strong><code>analyze_pqdif()</code><small>Map channel definitions and normalize samples. Apply raw × scale + offset when required by the storage method.</small></div>
+    </div>
+    <div class="flow-down" aria-hidden="true">↓</div>
+    <div class="flow-row">
+      <div class="flow-node source"><strong>Original samples</strong><code>series.rawValues</code><small>Preserved for data lineage.</small></div>
+      <div class="flow-node source"><strong>Chart samples</strong><code>observations[o].channels[c].series[s].values</code><small>The normalized numeric array used by sample charts.</small></div>
+      <div class="flow-node source"><strong>Selection catalog</strong><code>analysis.seriesCatalog</code><small>Metadata and IDs such as <code>o0-c1-s0</code>. No duplicate sample arrays.</small></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="routing-heading">
+    <h3 id="routing-heading">2. Select a series and draw the chart</h3>
+    <div class="flow-node"><strong>Eligibility → selection → source lookup</strong><small>Require <code>count &gt; 1</code> and <code>normalizationApplied === true</code>. Resolve the selected <code>o#-c#-s#</code> catalog ID to the original series, then read <code>series.values</code>.</small></div>
+    <div class="flow-down" aria-hidden="true">↓</div>
+    <div class="flow-row">
+      <div class="flow-node chart"><strong>Trend</strong><small>Select an eligible non-Time series.</small><small><code>series.values</code> → SVG line chart.</small></div>
+      <div class="flow-node chart"><strong>Oscilloscope (OSC)</strong><small>Select an eligible <code>Waveform</code> series.</small><small><code>series.values</code> → SVG line chart. No additional RMS calculation or waveform reconstruction.</small></div>
+      <div class="flow-node chart"><strong>Harmonics</strong><small>First eligible <code>Response</code> series, or a channel/quantity name containing harmonic, thd, or interharm.</small><small><code>series.values</code> → SVG bars. X = stored array index; Y = normalized value. Harmonic order is not inferred.</small></div>
+    </div>
+    <p class="flow-note">In the reference mapping, increment-encoded series are kept raw and excluded from plotting. Trend and OSC ignore non-finite samples and downsample displays above 1,800 finite points only for rendering; the original arrays remain unchanged.</p>
+  </section>
+
+  <section aria-labelledby="itic-heading">
+    <h3 id="itic-heading">3. Separate event path: Magnitude–Duration / ITIC</h3>
+    <div class="flow-row">
+      <div class="flow-node event"><strong>Event metadata</strong><code>observation.duration</code><br><code>channel.characterizationMagnitude</code></div>
+      <span class="flow-arrow" aria-hidden="true">→</span>
+      <div class="flow-node event"><strong>Validate each point</strong><small>Duration must be finite and greater than zero. Magnitude must be finite.</small></div>
+      <span class="flow-arrow" aria-hidden="true">→</span>
+      <div class="flow-node event"><strong>ITIC points</strong><small>X = duration<br>Y = characterization magnitude</small><small>Does not use <code>series.values</code>.</small></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="time-heading">
+    <h3 id="time-heading">4. Trend and OSC time-axis fallback</h3>
+    <p>Use the first reliable source below. If it is unavailable, try the next step.</p>
+    <ol class="time-flow">
+      <li class="flow-node"><strong>Channel Time series</strong><small>Same channel and sample count; <code>valueType === "Time"</code> or <code>unit === "timestamp"</code>.</small></li>
+      <li class="flow-node"><strong>Filename + cadence</strong><small>Q200 filename timestamp <code>_YYYYMMDDThhmmss…</code> plus cadence from metadata, such as <code>Freq10s</code> or <code>10min</code>.</small></li>
+      <li class="flow-node"><strong>Observation + cadence</strong><small><code>timeStart</code> or <code>timeCreate</code> plus the parsed cadence.</small></li>
+      <li class="flow-node"><strong>Sample index</strong><small>Sample 0 through the final sample when reliable time data is unavailable.</small></li>
+    </ol>
+    <p class="flow-note">Time-axis selection changes labels only; it does not change the plotted numeric values.</p>
+  </section>
+</details>
+
 
 <script>
 
@@ -146,157 +255,171 @@ function downloadJson() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function populateObservations() {
+let seriesCatalog = [];
+let selectedSeriesId = null;
+
+function isTimeSeries(series) {
+  return series.valueType === 'c690e862-f755-11cf-9d89-0080c72e70a3' ||
+    (series.valueTypeName || '').toLowerCase() === 'time' || series.unitsID === 1;
+}
+
+function buildSeriesCatalog(data) {
+  const result = [];
+  data.observations.forEach((observation, oi) => observation.channels.forEach((channel, ci) => {
+    channel.series.forEach((series, si) => {
+      if (isTimeSeries(series) || series.normalizationApplied === false || series.values.length < 2) return;
+      if (!series.values.some(Number.isFinite)) return;
+      result.push({ id: `o${oi}-c${ci}-s${si}`, oi, ci, si, observation, channel, series,
+        label: series.valueTypeName || Pqdif.seriesValueTypeNames[series.valueType] || `Series ${si + 1}` });
+    });
+  }));
+  return result;
+}
+
+function matchesChart(item, type) {
+  const quantity = (item.channel.quantityTypeName || '').toLowerCase();
+  if (type === 'osc') return quantity === 'waveform';
+  if (type === 'harmonics') return quantity === 'response' || /harmonic|thd|interharm/i.test(`${item.channel.name} ${item.channel.definition?.quantityName || ''}`);
+  return type === 'trend';
+}
+
+function hasMagnitudeDuration(obs, ch) {
+  return obs.duration != null && ch.characterizationMagnitude != null &&
+    Number.isFinite(Number(obs.duration)) && Number(obs.duration) > 0 &&
+    Number.isFinite(Number(ch.characterizationMagnitude));
+}
+
+function matchingObservationIndices(type) {
+  if (type === 'itic') return LOGICAL.observations.flatMap((obs, i) =>
+    obs.channels.some(ch => hasMagnitudeDuration(obs, ch)) ? [i] : []);
+  return [...new Set(seriesCatalog.filter(item => matchesChart(item, type)).map(item => item.oi))];
+}
+
+function updateObservationOptions() {
+  if (!LOGICAL) return;
+  const type = document.getElementById('chartType').value || 'trend';
+  const indices = matchingObservationIndices(type);
   const sel = document.getElementById('obsSelect');
+  const previous = sel.value;
   sel.innerHTML = '';
-  LOGICAL.observations.forEach((obs, i) => {
+  const all = document.createElement('option');
+  all.value = 'all';
+  all.textContent = indices.length ? `All matching observations (${indices.length})` : 'No matching observations';
+  sel.appendChild(all);
+  indices.forEach(i => {
     const opt = document.createElement('option');
-    opt.value = i;
-    opt.textContent = obs.name || `Observation ${i + 1}`;
+    opt.value = String(i);
+    opt.textContent = LOGICAL.observations[i].name || `Observation ${i + 1}`;
     sel.appendChild(opt);
   });
-
-  // Auto-select Voltage RMS
-  const vrmsIdx = LOGICAL.observations.findIndex(o =>
-    o.name && o.name.includes('Voltage RMS') && !o.name.includes('UB') && !o.name.includes('Symmetrical'));
-  if (vrmsIdx >= 0) sel.value = vrmsIdx;
-
+  sel.disabled = indices.length === 0;
+  sel.value = indices.some(i => String(i) === previous) ? previous : 'all';
   renderCharts();
 }
 
-function renderCharts() {
-  activeCharts.forEach(chart => chart.destroy());
-  activeCharts = [];
-  const idx = parseInt(document.getElementById('obsSelect').value);
-  const obs = LOGICAL.observations[idx];
-  const container = document.getElementById('charts');
-  container.innerHTML = '';
+function populateObservations() {
+  seriesCatalog = buildSeriesCatalog(LOGICAL);
+  selectedSeriesId = null;
+  document.getElementById('obsSelect').value = 'all';
+  document.getElementById('chartType').value = 'trend';
+  document.getElementById('seriesPanel').style.display = 'block';
+  updateObservationOptions();
+}
 
-  if (!obs || !obs.channels || obs.channels.length === 0) {
-    container.innerHTML = '<div class="loading">No channel data in this observation</div>';
+function renderCharts() {
+  activeCharts.forEach(chart => chart.destroy()); activeCharts = [];
+  if (!LOGICAL) return;
+  const type = document.getElementById('chartType').value || 'trend';
+  const observationFilter = document.getElementById('obsSelect').value;
+  const container = document.getElementById('charts'); container.innerHTML = '';
+  const table = document.getElementById('seriesRows'); table.innerHTML = '';
+  const message = document.getElementById('seriesSummary');
+  if (type === 'itic') {
+    message.textContent = 'Magnitude–Duration uses event metadata, not sample series.';
+    renderMagnitudeDuration(container, observationFilter);
     return;
   }
-
-  // Classify channels by phase
-  const phaseChannels = {};
-  const otherChannels = [];
-
-  for (const ch of obs.channels) {
-    const phase = ({ AN: 'A', BN: 'B', CN: 'C', NG: 'N' })[ch.phase] || phaseForChannelName(ch.name);
-    if (phase) {
-      phaseChannels[phase] = ch;
-    } else if (ch.name) {
-      otherChannels.push(ch);
-    }
+  const items = seriesCatalog.filter(item => matchesChart(item, type) &&
+    (observationFilter === 'all' || item.oi === Number(observationFilter)));
+  message.textContent = `${items.length} matching series. Select a row to plot its data.`;
+  if (!items.length) {
+    selectedSeriesId = null;
+    container.textContent = 'No matching numeric series in this selection. Try another chart type or observation.';
+    return;
   }
+  if (!items.some(item => item.id === selectedSeriesId)) selectedSeriesId = items[0].id;
+  items.forEach(item => {
+    const row = document.createElement('tr');
+    const choice = document.createElement('td');
+    const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'series';
+    radio.checked = item.id === selectedSeriesId;
+    radio.setAttribute('aria-label', `Plot ${item.channel.name}, ${item.label}, ${item.id}`);
+    radio.addEventListener('change', () => { selectedSeriesId = item.id; renderCharts(); });
+    choice.appendChild(radio); row.appendChild(choice);
+    const values = [item.id, item.observation.name, item.channel.name, item.channel.phase,
+      item.channel.quantityTypeName, item.label, item.series.units, item.series.values.length];
+    values.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
+    table.appendChild(row);
+  });
+  renderSelectedSeries(container, items.find(item => item.id === selectedSeriesId), type);
+}
 
-  // Determine unit from observation name or channel data
-  let unit = '';
-  if (obs.name && obs.name.toLowerCase().includes('voltage')) unit = 'V';
-  else if (obs.name && obs.name.toLowerCase().includes('current')) unit = 'A';
-  else if (obs.name && obs.name.toLowerCase().includes('frequency')) unit = 'Hz';
-  else if (obs.name && obs.name.toLowerCase().includes('power')) unit = 'W';
+function seriesPoints(item, type) {
+  const time = type !== 'harmonics' && item.channel.series.find(s => isTimeSeries(s) &&
+    s.values.length === item.series.values.length && s.values.every(Number.isFinite));
+  const axis = time ? `Time (${time.units || 'file units'})` : 'Sample index';
+  const points = [];
+  item.series.values.forEach((y, index) => { if (Number.isFinite(y)) points.push({ x: time ? time.values[index] : index, y }); });
+  // Preserve original indices and endpoints; only reduce the rendered line.
+  const displayed = type !== 'harmonics' && points.length > 1800
+    ? Array.from({ length: 1800 }, (_, i) => points[Math.round(i * (points.length - 1) / 1799)]) : points;
+  return { points: displayed, axis, finiteCount: points.length };
+}
 
-  // --- Main TRMS Chart ---
-  const phases = ['A', 'B', 'C', 'N'].filter(p => phaseChannels[p]);
-  if (phases.length > 0) {
-    const datasets = [];
-    let detectedUnit = unit;
+function renderSelectedSeries(container, item, type) {
+  const { points, axis, finiteCount } = seriesPoints(item, type);
+  const title = `${item.channel.name} — ${item.label}`;
+  const card = createChartCard(container, title);
+  const note = document.createElement('p'); note.className = 'series-note';
+  note.textContent = `${finiteCount} finite samples; ${points.length} displayed. ${type === 'harmonics'
+    ? 'X uses stored array order; harmonic order is not inferred.'
+    : axis === 'Sample index' ? 'No matching numeric Time series; X uses the original sample index.' : 'X uses the Time series from the same channel.'}`;
+  card.appendChild(note);
+  const options = chartOptions(item.series.units);
+  options.scales.x.title.text = type === 'harmonics' ? 'Stored array index' : axis;
+  delete options.scales.x.ticks.callback;
+  options.plugins.tooltip.callbacks.title = items => `${options.scales.x.title.text}: ${items[0]?.parsed?.x ?? ''}`;
+  activeCharts.push(new Chart(card.querySelector('canvas'), {
+    type: type === 'harmonics' ? 'bar' : 'line',
+    data: { datasets: [{ label: title, data: points, borderColor: '#60a5fa', backgroundColor: '#60a5fa80',
+      borderWidth: 1.5, pointRadius: 0, tension: 0 }] }, options
+  }));
+}
 
-    for (const phase of phases) {
-      const ch = phaseChannels[phase];
-      if (!ch.series || ch.series.length < 2) continue;
-
-      const timeSeries = ch.series[0];
-      const rmsSeries = ch.series[1];
-      const minSeries = ch.series.length > 2 ? ch.series[2] : null;
-      const maxSeries = ch.series.length > 3 ? ch.series[3] : null;
-      const color = PHASE_COLORS[phase];
-
-      if (!timeSeries.values?.length || !rmsSeries.values?.length) continue;
-
-      // Detect unit from values
-      if (!detectedUnit) detectedUnit = guessUnitFromValues(rmsSeries.values);
-
-      // Min/Max band
-      if (minSeries?.values?.length && maxSeries?.values?.length) {
-        datasets.push({
-          label: `${PHASE_NAMES[phase]} Min`,
-          data: timeSeries.values.map((t, i) => ({ x: t, y: minSeries.values[i] })),
-          borderColor: 'transparent', backgroundColor: color.bg,
-          fill: '+1', pointRadius: 0, order: 2,
-        }, {
-          label: `${PHASE_NAMES[phase]} Max`,
-          data: timeSeries.values.map((t, i) => ({ x: t, y: maxSeries.values[i] })),
-          borderColor: 'transparent', backgroundColor: color.bg,
-          fill: false, pointRadius: 0, order: 2,
-        });
-      }
-
-      // RMS line
-      datasets.push({
-        label: `${PHASE_NAMES[phase]} RMS`,
-        data: timeSeries.values.map((t, i) => ({ x: t, y: rmsSeries.values[i] })),
-        borderColor: color.line, backgroundColor: color.line,
-        borderWidth: 2, pointRadius: 0, tension: 0.1, order: 1,
-      });
-    }
-
-    if (datasets.length > 0) {
-      if (!unit) unit = detectedUnit;
-      const card = createChartCard(container, `${obs.name} - TRMS`, unit);
-      activeCharts.push(new Chart(card.querySelector('canvas'), {
-        type: 'line', data: { datasets }, options: chartOptions(unit),
-      }));
-
-      // Stats
-      const statsDiv = document.createElement('div');
-      statsDiv.className = 'stats';
-      for (const phase of phases) {
-        const ch = phaseChannels[phase];
-        if (!ch.series || ch.series.length < 2) continue;
-        const rms = ch.series[1].values;
-        if (!rms?.length) continue;
-        const avg = rms.reduce((a, b) => a + b, 0) / rms.length;
-        const min = Math.min(...rms);
-        const max = Math.max(...rms);
-        const cls = `phase-${phase.toLowerCase()}`;
-        statsDiv.innerHTML += `
-          <div class="stat"><div class="label">${PHASE_NAMES[phase]} RMS Avg</div>
-            <div class="value ${cls}">${avg.toFixed(1)} ${unit}</div></div>
-          <div class="stat"><div class="label">${PHASE_NAMES[phase]} Min/Max</div>
-            <div class="value ${cls}">${min.toFixed(1)} / ${max.toFixed(1)} ${unit}</div></div>`;
-      }
-      container.appendChild(statsDiv);
-    }
+function renderMagnitudeDuration(container, observationFilter) {
+  const datasets = [];
+  LOGICAL.observations.forEach((obs, oi) => {
+    if (observationFilter !== 'all' && oi !== Number(observationFilter)) return;
+    obs.channels.forEach(ch => {
+      if (!hasMagnitudeDuration(obs, ch)) return;
+      const x = Number(obs.duration), y = Number(ch.characterizationMagnitude);
+      if (!Number.isFinite(x) || x <= 0 || !Number.isFinite(y)) return;
+      datasets.push({ label: `${obs.name} — ${ch.name}`, data: [{ x, y }], backgroundColor: '#fbbf24', pointRadius: 5 });
+    });
+  });
+  if (!datasets.length) {
+    container.textContent = 'Magnitude–Duration is unavailable: this export has no usable observation duration and channel characterization magnitude. These values cannot be inferred from the sample series.';
+    return;
   }
-
-  // --- Other channels ---
-  for (const ch of otherChannels) {
-    if (!ch.series || ch.series.length < 2) continue;
-    const timeSeries = ch.series[0];
-    if (!timeSeries.values?.length) continue;
-
-    const datasets = [];
-    for (let si = 1; si < ch.series.length; si++) {
-      const s = ch.series[si];
-      if (!s.values || s.values.length === 0) continue;
-      const name = s.valueTypeName || Pqdif.seriesValueTypeNames[s.valueType] || `Series ${si}`;
-      datasets.push({
-        label: `${ch.name} ${name}`,
-        data: timeSeries.values.map((t, i) => ({ x: t, y: s.values[i] })),
-        borderColor: `hsl(${si * 80}, 70%, 60%)`, borderWidth: 1.5, pointRadius: 0, tension: 0.1,
-      });
-    }
-
-    if (datasets.length > 0) {
-      const chUnit = ch.series[1]?.units || '';
-      const card = createChartCard(container, ch.name, chUnit);
-      activeCharts.push(new Chart(card.querySelector('canvas'), {
-        type: 'line', data: { datasets }, options: chartOptions(chUnit),
-      }));
-    }
-  }
+  const card = createChartCard(container, 'Magnitude–Duration');
+  const options = chartOptions('Characterization magnitude (source units)');
+  options.scales.x.title.text = 'Duration (source units)';
+  delete options.scales.x.ticks.callback;
+  options.plugins.tooltip.callbacks.title = items => `Duration: ${items[0]?.parsed?.x ?? ''}`;
+  const note = document.createElement('p'); note.className = 'series-note';
+  note.textContent = 'Source metadata only. No ITIC compliance boundary or nominal-voltage normalization is applied.';
+  card.appendChild(note);
+  activeCharts.push(new Chart(card.querySelector('canvas'), { type: 'scatter', data: { datasets }, options }));
 }
 
 function createChartCard(container, title, unit) {

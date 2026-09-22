@@ -36,7 +36,7 @@ test('viewer loads the shared library, prepares every observation, and exports m
   let downloadedBlob, downloadName;
   function node() {
     return { style: {}, classList: { add() {}, remove() {} }, value: '0',
-      innerHTML: '', appendChild() {}, addEventListener() {}, querySelector: node,
+      innerHTML: '', setAttribute() {}, appendChild() {}, addEventListener() {}, querySelector: node,
       click() { if (this.download) downloadName = this.download; } };
   }
   const elements = new Map();
@@ -73,6 +73,22 @@ test('viewer loads the shared library, prepares every observation, and exports m
     document.getElementById('obsSelect').value = String(i);
     vm.runInContext('renderCharts()', context);
   }
+  document.getElementById('obsSelect').value = 'all';
+  for (const type of ['trend', 'osc', 'harmonics', 'itic']) {
+    document.getElementById('chartType').value = type;
+    vm.runInContext('renderCharts()', context);
+  }
+  assert.match(document.getElementById('charts').textContent, /unavailable/);
+  const routing = vm.runInContext(`(() => {
+    const item = { channel: { quantityTypeName: 'WaveForm', name: 'Voltage', series: [] },
+      series: { values: [1, NaN, 3] } };
+    const points = seriesPoints(item, 'osc');
+    return [matchesChart(item, 'osc'), matchesChart(item, 'trend'), matchesChart(item, 'harmonics'),
+      points.axis, points.points.map(p => p.x)];
+  })()`, context);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(routing)), [true, true, false, 'Sample index', [0, 2]]);
+  assert.equal(vm.runInContext("matchesChart({channel:{quantityTypeName:'Response',name:'Spectrum'}}, 'harmonics')", context), true);
+  assert.equal(vm.runInContext("matchesChart({channel:{quantityTypeName:'ValueLog',name:'Voltage THD'}}, 'harmonics')", context), true);
   assert.ok(charts.length > 0);
   assert.equal(charts[0].destroyed, true);
   vm.runInContext('downloadJson()', context);
