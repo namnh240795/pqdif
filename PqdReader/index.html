@@ -29,6 +29,8 @@
   .chart-tools button { background: #0f172a; color: #cbd5e1; border: 1px solid #475569; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
   .chart-tools button:hover { border-color: #60a5fa; color: #fff; }
   .chart-container { position: relative; height: 300px; }
+  .voltage-level-chart .chart-container { height: 260px; }
+  .level-time-chart .chart-container { height: min(72vh, 720px); min-height: 420px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; }
   .stat { background: #0f172a; border-radius: 8px; padding: 12px 16px; border: 1px solid #334155; }
   .stat .label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -90,12 +92,41 @@
   <div>
     <label for="chartType">Analysis Type</label><br>
     <select id="chartType" onchange="updateAnalysisView()">
-      <option value="trend">Trend</option>
       <option value="level-time">Level Time Diagram</option>
+      <option value="trend">Trend</option>
       <option value="osc">Oscilloscope (OSC)</option>
       <option value="harmonics">Harmonics</option>
       <option value="itic">ITIC / Events</option>
     </select>
+  </div>
+  <div id="levelMeasurementControl">
+    <label for="levelMeasurement">Measurement / Voltage group</label><br>
+    <select id="levelMeasurement" onchange="updateAnalysisView()">
+      <option value="frequency">Frequency</option>
+      <option value="voltage">Voltage RMS · 10 min</option>
+      <option value="pst">Short Term Flicker (Pst)</option>
+      <option value="plt">Long Term Flicker (Plt · native interval)</option>
+      <option value="flicker-ext">Extreme Values Flicker</option>
+      <option value="thd">THD Voltage</option>
+      <option value="thd-ext">Extreme Values THD Voltage</option>
+      <option value="odd">Odd Harmonics</option>
+      <option value="even">Even Harmonics</option>
+      <option value="harmonic">All Individual Harmonics</option>
+      <option value="inter">Interharmonics · stored series</option>
+      <option value="harmonic-ext">Extreme Values Harmonics</option>
+      <option value="angle">Angle of Harmonics</option>
+      <option value="pwhd">PWHD Voltage</option>
+      <option value="supra">Supraharmonics</option>
+      <option value="unbalance">Voltage Asymmetry</option>
+      <option value="components">Voltage Symmetrical Components</option>
+      <option value="signal">Signal Transmission Voltages</option>
+      <option value="signal-ext">Extreme Values Signalling Voltage</option>
+      <option value="prevailing">Prevailing Ratio</option>
+    </select>
+  </div>
+  <div id="levelSubsetControl" style="display:none">
+    <label for="levelSubset">Dataset / harmonic group</label><br>
+    <select id="levelSubset" onchange="updateAnalysisView()"></select>
   </div>
   <div>
     <label for="rangeStart">Start (Absolute Date)</label><br>
@@ -389,7 +420,7 @@ function resetDataRange() {
 function matchesChart(item, type) {
   if (type === 'itic') return true;
   const quantity = (item.channel.quantityTypeName || '').toLowerCase();
-  if (type === 'level-time') return /frequency|freq|\bf\b/i.test(`${item.channel.name} ${item.channel.definition?.quantityMeasured || ''} ${item.channel.definition?.quantityName || ''}`);
+  if (type === 'level-time') return isLevelTimeSeries(item);
   if (type === 'osc') return quantity === 'waveform';
   if (type === 'harmonics') return quantity === 'response' || /harmonic|thd|interharm/i.test(`${item.channel.name} ${item.channel.definition?.quantityName || ''}`);
   return type === 'trend';
@@ -424,6 +455,8 @@ function matchingObservationIndices(type) {
 function updateAnalysisView() {
   if (!LOGICAL) return;
   const type = document.getElementById('chartType').value || 'trend';
+  document.getElementById('levelMeasurementControl').style.display = type === 'level-time' ? 'block' : 'none';
+  updateLevelSubset(type);
   const indices = matchingObservationIndices(type);
   const range = currentDataRange();
   document.getElementById('timezoneName').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time';
@@ -471,10 +504,18 @@ function renderEventList(indices) {
 
 function populateObservations() {
   seriesCatalog = buildSeriesCatalog(LOGICAL);
+  levelSubsetKey = null;
+  for (const option of Array.from(document.getElementById('levelMeasurement').options || [])) {
+    if (!VOLTAGE_VIEWS[option.value]) continue;
+    const label = option.textContent.replace(/ · unavailable in this file$/, '');
+    option.textContent = seriesCatalog.some(item => voltageViewMatches(item, option.value))
+      ? label : `${label} · unavailable in this file`;
+  }
   selectedSeriesId = null;
   selectedEventIndex = null;
   initializeDataRange();
-  document.getElementById('chartType').value = 'trend';
+  document.getElementById('chartType').value = 'level-time';
+  document.getElementById('levelMeasurement').value = 'frequency';
   document.getElementById('seriesPanel').style.display = 'block';
   updateAnalysisView();
 }
@@ -501,7 +542,9 @@ function renderCharts() {
     overlapsDataRange(item.timeBounds, range));
   document.getElementById('seriesHeading').textContent = type === 'itic'
     ? `Event data · ${LOGICAL.observations[eventIndex]?.name || ''}` : 'Relevant data series';
-  message.textContent = `${items.length} matching series. Voltage (U) and current (I) values are grouped into separate diagrams.`;
+  message.textContent = type === 'level-time'
+    ? `${items.length} matching series at the recorded interval. Click a legend entry to hide or show a line.`
+    : `${items.length} matching series. Voltage (U) and current (I) values are grouped into separate diagrams.`;
   if (type === 'itic') {
     document.getElementById('seriesHeading').textContent = 'All event measurements';
     const eventItems = seriesCatalog.filter(item => isEventObservation(item.observation) &&
@@ -511,13 +554,16 @@ function renderCharts() {
   }
   if (!items.length) {
     selectedSeriesId = null;
-    container.textContent = 'No matching numeric series in this selection. Try another chart type or observation.';
+    const view = VOLTAGE_VIEWS[document.getElementById('levelMeasurement').value];
+    container.textContent = type === 'level-time' && view
+      ? `${view.title}: no matching measurements at the required interval in this file/time range. This view requires recorded data; it is not calculated from other measurements.`
+      : 'No matching numeric series in this selection. Try another chart type or observation.';
     return;
   }
   items.forEach(item => {
     const row = document.createElement('tr');
     const values = [item.id, item.observation.name, item.channel.name, item.channel.phase,
-      item.channel.quantityTypeName, item.label, item.series.units, seriesPoints(item, type).finiteCount];
+      item.channel.quantityTypeName, `${item.label} · group ${item.channel.instance?.channelGroupID ?? '—'}`, item.series.units, seriesPoints(item, type).finiteCount];
     values.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
     table.appendChild(row);
   });
@@ -525,9 +571,9 @@ function renderCharts() {
   else renderGroupedElectricalSeries(container, items, type);
 }
 
-function seriesPoints(item, type) {
+function seriesPoints(item, type, rangeOverride = null) {
   const time = itemTimeAxis(item);
-  const range = currentDataRange();
+  const range = rangeOverride || currentDataRange();
   const hasAbsoluteTime = time && observationStartMs(item.observation) !== null;
   const axis = hasAbsoluteTime ? 'Local date and time' : 'Sample index';
   const points = [];
@@ -541,6 +587,108 @@ function seriesPoints(item, type) {
   const displayed = type !== 'harmonics' && points.length > 1800
     ? Array.from({ length: 1800 }, (_, i) => points[Math.round(i * (points.length - 1) / 1799)]) : points;
   return { points: displayed, axis, finiteCount: points.length };
+}
+
+function sampleIntervalSeconds(item) {
+  if (item.cachedSampleInterval !== undefined) return item.cachedSampleInterval;
+  const time = itemTimeAxis(item);
+  if (!time || time.values.length < 3) return null;
+  const differences = [];
+  for (let i = 1; i < time.values.length; i++) {
+    const delta = Number(time.values[i]) - Number(time.values[i - 1]);
+    if (Number.isFinite(delta) && delta > 0) differences.push(delta);
+  }
+  if (!differences.length) return null;
+  differences.sort((a, b) => a - b);
+  return item.cachedSampleInterval = differences[Math.floor(differences.length / 2)];
+}
+
+const VOLTAGE_VIEWS = {
+  pst: { title: 'Short Term Flicker (Pst)', source: /Steady State PST\b/, cadence: 600 },
+  plt: { title: 'Long Term Flicker (Plt)', source: /Steady State PLT\b/, cadence: 7200 },
+  'flicker-ext': { title: 'Extreme Values Flicker', source: /Steady State (PST|PLT)\b/, extreme: true },
+  thd: { title: 'THD Voltage', source: /Steady State Voltage THD\b/ },
+  'thd-ext': { title: 'Extreme Values THD Voltage', source: /Steady State Voltage THD\b/, extreme: true },
+  odd: { title: 'Odd Harmonics', source: /Individual Voltage Harmonics\b/, parity: 1, harmonic: true },
+  even: { title: 'Even Harmonics', source: /Individual Voltage Harmonics\b/, parity: 0, harmonic: true },
+  harmonic: { title: 'Individual Harmonics', source: /Individual Voltage Harmonics\b/, harmonic: true },
+  inter: { title: 'Interharmonics', source: /Voltage Absolute\/Relative InterHarmonics\b/ },
+  'harmonic-ext': { title: 'Extreme Values Harmonics', source: /Individual Voltage Harmonics\b/, extreme: true, harmonic: true },
+  angle: { title: 'Angle of Harmonics', source: /Voltage.*Harmonic|Harmonic.*Voltage/i, angle: true, harmonic: true },
+  pwhd: { title: 'PWHD Voltage', source: /Voltage/i, channel: /PWHD/i },
+  supra: { title: 'Supraharmonics', source: /Voltage.*Supraharmonic|Supraharmonic.*Voltage/i },
+  unbalance: { title: 'Voltage Asymmetry', source: /Steady State Voltage UB\b/ },
+  components: { title: 'Voltage Symmetrical Components', source: /Voltage Symmetrical Components\b/ },
+  signal: { title: 'Signal Transmission Voltages', source: /Voltage.*Signall?|Signall?.*Voltage/i },
+  'signal-ext': { title: 'Extreme Values Signalling Voltage', source: /Voltage.*Signall?|Signall?.*Voltage/i, extreme: true },
+  prevailing: { title: 'Prevailing Ratio', source: /Voltage/i, channel: /prevailing|prevRatio/i }
+};
+
+function harmonicGroup(item) {
+  const value = item.channel.instance?.channelGroupID;
+  return /^\d+$/.test(String(value ?? '')) ? Number(value) : null;
+}
+
+function voltageViewMatches(item, key) {
+  const view = VOLTAGE_VIEWS[key];
+  if (!view || !view.source.test(item.observation.name) || electricalQuantity(item) !== 'U') return false;
+  if (item.channel.quantityTypeName !== 'ValueLog') return false;
+  if (Math.abs((sampleIntervalSeconds(item) || 0) - (view.cadence || 600)) > 1) return false;
+  if (view.channel && !view.channel.test(item.channel.name)) return false;
+  if (view.extreme && !['Minimum', 'Maximum'].includes(item.label)) return false;
+  if (view.angle && !['Degrees', 'Radians'].includes(item.series.units)) return false;
+  if (!view.angle && ['Degrees', 'Radians'].includes(item.series.units)) return false;
+  if (view.parity !== undefined) {
+    const order = harmonicGroup(item);
+    if (order === null || order < 2 || order % 2 !== view.parity) return false;
+  }
+  return true;
+}
+
+function voltageSubset(item, key) {
+  if (VOLTAGE_VIEWS[key]?.harmonic) return `Group ${harmonicGroup(item) ?? 'unknown'}`;
+  if (key === 'inter') return `Record ${item.ci + 1}: ${item.channel.name}`;
+  return 'all';
+}
+
+let levelSubsetKey = null;
+function updateLevelSubset(type) {
+  const key = document.getElementById('levelMeasurement').value;
+  const control = document.getElementById('levelSubsetControl');
+  const select = document.getElementById('levelSubset');
+  const hasSubset = type === 'level-time' && (VOLTAGE_VIEWS[key]?.harmonic || key === 'inter');
+  control.style.display = hasSubset ? 'block' : 'none';
+  if (!hasSubset) { levelSubsetKey = null; return; }
+  if (levelSubsetKey === key) return;
+  levelSubsetKey = key;
+  select.innerHTML = '';
+  const keys = [...new Set(seriesCatalog.filter(item => voltageViewMatches(item, key)).map(item => voltageSubset(item, key)))];
+  keys.forEach(value => {
+    const option = document.createElement('option'); option.value = value; option.textContent = value;
+    select.appendChild(option);
+  });
+  select.value = keys[0] || '';
+}
+
+function isLevelTimeSeries(item) {
+  const key = document.getElementById('levelMeasurement').value;
+  if (VOLTAGE_VIEWS[key]) return voltageViewMatches(item, key) &&
+    (!(VOLTAGE_VIEWS[key].harmonic || key === 'inter') || voltageSubset(item, key) === document.getElementById('levelSubset').value);
+  if (key !== 'voltage') return isTenMinuteFrequencySeries(item);
+  return item.series.units === 'Volts' && electricalQuantity(item) === 'U' &&
+    /\bvoltage rms\b/i.test(item.observation.name || '') && item.channel.quantityTypeName === 'ValueLog' &&
+    ['Average', 'Minimum', 'Maximum'].includes(item.label) &&
+    Math.abs((sampleIntervalSeconds(item) || 0) - 600) <= 1;
+}
+
+function isTenMinuteFrequencySeries(item) {
+  const units = String(item.series.units || '').toLowerCase();
+  const name = `${item.channel.name || ''} ${item.observation.name || ''} ${item.channel.definition?.quantityName || ''}`;
+  const valueType = item.label;
+  return units === 'hertz' && /frequency|freq|\bf\b/i.test(name) &&
+    ['Average', 'Minimum', 'Maximum'].includes(valueType) &&
+    Math.abs((sampleIntervalSeconds(item) || 0) - 600) <= 60 &&
+    item.series.values.some(value => Number.isFinite(value) && value !== 0);
 }
 
 function renderSelectedSeries(container, item, type) {
@@ -653,37 +801,157 @@ function renderGroupedElectricalSeries(container, items, type) {
   if (activeCharts.length === initialChartCount) container.textContent = 'No voltage/current RMS or WaveForm series are available for this selection.';
 }
 
-function renderLevelTimeDiagram(container, items) {
-  const series = items.filter(item => /frequency|freq|\bf\b/i.test(
-    `${item.channel.name} ${item.channel.definition?.quantityMeasured || ''} ${item.channel.definition?.quantityName || ''}`));
-  if (!series.length) {
-    container.textContent = 'No frequency series are available in the selected time range.';
+function renderLevelTimeDiagram(container, items, voltageGroup = null) {
+  const key = document.getElementById('levelMeasurement').value;
+  if (VOLTAGE_VIEWS[key]) return renderVoltageView(container, items, key);
+  const voltage = document.getElementById('levelMeasurement').value === 'voltage';
+  if (voltage && !voltageGroup) {
+    const groups = [
+      { title: 'Line-to-earth RMS', channels: ['U1', 'U2', 'U3', 'U4'], extremes: false },
+      { title: 'Line-to-line RMS', channels: ['U12', 'U23', 'U31'], extremes: false },
+      { title: 'Line-to-earth minimum / maximum', channels: ['U1', 'U2', 'U3', 'U4'], extremes: true },
+      { title: 'Line-to-line minimum / maximum', channels: ['U12', 'U23', 'U31'], extremes: true },
+      { title: 'Other voltage RMS channels', channels: null, extremes: null }
+    ];
+    const knownChannels = groups.flatMap(group => group.channels || []);
+    let count = 0;
+    groups.forEach(group => {
+      const subset = items.filter(item => isLevelTimeSeries(item) &&
+        (group.channels ? group.channels.includes(item.channel.name) : !knownChannels.includes(item.channel.name)) &&
+        (group.extremes === null || (item.label !== 'Average') === group.extremes));
+      if (subset.length) { renderLevelTimeDiagram(container, subset, group.title); count++; }
+    });
+    if (!count) container.textContent = 'No 10-minute voltage RMS data in this time range.';
     return;
   }
-  const card = createChartCard(container, 'Frequency · Level Time Diagram');
+  const quantity = voltage ? voltageGroup : 'Frequency';
+  const unit = voltage ? 'V' : 'Hz';
+  const series = items.filter(isLevelTimeSeries);
+  if (!series.length) {
+    container.textContent = `No ${quantity.toLowerCase()} series sampled at 10-minute intervals are available in the selected time range.`;
+    return;
+  }
+  const range = currentDataRange();
+  const card = createChartCard(container, `${quantity} · Level Time Diagram (10 min)`);
+  card.classList.add(voltage ? 'voltage-level-chart' : 'level-time-chart');
+  const tools = document.createElement('div'); tools.className = 'chart-tools';
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset zoom';
+  reset.setAttribute('aria-label', `Reset zoom on the 10-minute ${quantity.toLowerCase()} diagram`);
+  tools.appendChild(reset); card.appendChild(tools);
   const datasets = [];
   let finiteCount = 0;
-  const colors = { Average: '#d6c6c3', Minimum: '#f87171', Maximum: '#60a5fa', Values: '#d6c6c3' };
+  const colors = { Average: '#d6c6c3', Minimum: '#a8a29e', Maximum: '#f87171' };
   series.forEach(item => {
     const result = seriesPoints(item, 'trend');
     if (!result.points.length) return;
     finiteCount += result.finiteCount;
-    datasets.push({ label: `${item.channel.name} · ${item.label}`, data: result.points,
-      borderColor: colors[item.label] || '#c4b5fd', backgroundColor: 'transparent', borderWidth: 1.2,
+    const label = voltage ? `${item.channel.name} · ${item.label}` :
+      item.label === 'Average' ? 'f' : `f ${item.label === 'Minimum' ? 'min' : 'max'}`;
+    const channelIndex = ['U1', 'U2', 'U3', 'U4', 'U12', 'U23', 'U31', 'USum'].indexOf(item.channel.name);
+    const voltageColors = ['#60a5fa', '#f87171', '#34d399', '#fbbf24', '#a78bfa', '#fb923c', '#22d3ee', '#f472b6'];
+    datasets.push({ label, data: result.points,
+      borderColor: voltage ? voltageColors[Math.max(0, channelIndex) % voltageColors.length] : colors[item.label],
+      borderDash: voltage && item.label !== 'Average' ? (item.label === 'Minimum' ? [3, 3] : [8, 4]) : [],
+      backgroundColor: 'transparent', borderWidth: 1.3,
       pointRadius: 0, tension: 0, spanGaps: false });
   });
   if (!datasets.length) {
-    container.textContent = 'No frequency samples fall inside the selected time range.';
+    container.textContent = `No ${quantity.toLowerCase()} samples fall inside the selected time range.`;
     return;
   }
   const note = document.createElement('p'); note.className = 'series-note';
-  note.textContent = `${datasets.length} frequency series · ${finiteCount.toLocaleString()} samples. Each value type is a separate line.`;
+  const rangeLabel = range.start !== null && range.end !== null
+    ? `${new Date(range.start).toLocaleString()} to ${new Date(range.end).toLocaleString()}`
+    : 'the full available recording range';
+  note.textContent = `${datasets.length} ${quantity.toLowerCase()} series at 10-minute cadence · ${finiteCount.toLocaleString()} plotted samples across the full selected range (${rangeLabel}). Lines show the stored average, minimum, and maximum values.`;
   card.appendChild(note);
-  const options = chartOptions('Hz');
-  options.scales.x.title.text = 'File date and time';
-  options.scales.x.ticks.callback = value => new Date(value).toLocaleString();
+  const options = chartOptions(unit);
+  options.scales.x.title.text = 'Date and time';
+  options.scales.x.ticks.callback = value => new Date(value).toLocaleDateString(undefined,
+    { year: 'numeric', month: '2-digit', day: '2-digit' });
+  options.scales.x.grid.color = '#475569';
+  options.scales.x.grid.borderDash = [5, 6];
+  options.scales.y.title.text = voltage ? 'Voltage (V)' : `${quantity} (${unit})`;
+  if (voltage) {
+    options.interaction = { mode: 'nearest', intersect: false };
+    options.plugins.legend.position = 'left';
+    options.plugins.legend.align = 'start';
+    options.scales.x.min = range.start ?? undefined;
+    options.scales.x.max = range.end ?? undefined;
+    const syncTimeRange = ({ chart }) => {
+      activeCharts.forEach(other => {
+        if (other === chart) return;
+        other.options.scales.x.min = chart.scales.x.min;
+        other.options.scales.x.max = chart.scales.x.max;
+        other.update('none');
+      });
+    };
+    options.plugins.zoom.zoom.onZoom = syncTimeRange;
+    options.plugins.zoom.pan.onPan = syncTimeRange;
+  }
+  options.scales.y.ticks.callback = value => `${Number(value).toFixed(voltage ? 0 : 2)} ${unit}`;
   options.plugins.tooltip.callbacks.title = pointItems => new Date(pointItems[0]?.parsed?.x ?? 0).toLocaleString();
-  activeCharts.push(new Chart(card.querySelector('canvas'), { type: 'line', data: { datasets }, options }));
+  options.plugins.tooltip.callbacks.label = item => `${item.dataset.label}: ${item.parsed.y?.toFixed(3) ?? 'N/A'} ${unit}`;
+  const chart = new Chart(card.querySelector('canvas'), { type: 'line', data: { datasets }, options });
+  reset.addEventListener('click', () => {
+    if (voltage) activeCharts.forEach(other => other.resetZoom());
+    else chart.resetZoom();
+  });
+  activeCharts.push(chart);
+}
+
+function renderVoltageView(container, items, key) {
+  const view = VOLTAGE_VIEWS[key];
+  const groups = new Map();
+  items.forEach(item => {
+    // Never mix different units or THD definitions on one scale.
+    const family = key === 'thd' || key === 'thd-ext' ? item.channel.name.split(' ')[0] : view.title;
+    const group = `${family} · ${item.series.units}`;
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(item);
+  });
+  groups.forEach((series, group) => {
+    const unit = { Percent: '%', Volts: 'V', Degrees: '°', Radians: 'rad', None: '' }[series[0].series.units] ?? series[0].series.units;
+    const interval = sampleIntervalSeconds(series[0]);
+    const card = createChartCard(container, `${group} · ${interval / 60} min`);
+    card.classList.add('voltage-level-chart');
+    const colors = ['#60a5fa', '#f87171', '#34d399', '#fbbf24', '#a78bfa', '#fb923c'];
+    const datasets = series.map((item, i) => ({
+      sourceId: item.id,
+      label: `${item.channel.name} · ${item.label}${view.harmonic ? ` · group ${harmonicGroup(item)}` : ''}${key === 'inter' ? ` · series ${item.si + 1} (recorded unit)` : ''}`,
+      data: seriesPoints(item, 'trend').points,
+      borderColor: colors[i % colors.length], backgroundColor: 'transparent',
+      borderWidth: 1.3, pointRadius: 0, tension: 0, spanGaps: false
+    })).filter(dataset => dataset.data.length);
+    if (!datasets.length) { card.remove(); return; }
+    const note = document.createElement('p'); note.className = 'series-note';
+    note.textContent = `${datasets.length} series · ${interval / 60}-minute recorded cadence. Hover for timestamp and value; click a legend entry to toggle a line.`;
+    if (view.harmonic) note.textContent += ' Harmonic order is interpreted from this export’s channel-group IDs, not the time-sample index. Odd/even views exclude DC and the fundamental.';
+    if (key === 'inter') note.textContent += ' This export labels both absolute/relative series as Volts and does not identify their orders. Recorded values and units are preserved without inferring percentages or harmonic order.';
+    card.appendChild(note);
+    const options = chartOptions(unit);
+    options.interaction = { mode: 'nearest', intersect: false };
+    options.plugins.legend.position = 'left'; options.plugins.legend.align = 'start';
+    options.scales.x.title.text = 'File date and time';
+    options.scales.x.ticks.callback = value => new Date(value).toLocaleString();
+    options.scales.x.grid.color = '#475569';
+    options.scales.x.border = { dash: [5, 6] };
+    options.scales.y.title.text = unit || 'Dimensionless';
+    options.scales.x.min = currentDataRange().start ?? undefined;
+    options.scales.x.max = currentDataRange().end ?? undefined;
+    options.plugins.tooltip.callbacks.title = points => new Date(points[0]?.parsed.x).toLocaleString();
+    options.plugins.tooltip.callbacks.label = item => `${item.dataset.label}: ${item.parsed.y.toFixed(3)} ${unit}`;
+    const sync = ({ chart }) => activeCharts.forEach(other => {
+      if (other === chart) return;
+      other.options.scales.x.min = chart.scales.x.min; other.options.scales.x.max = chart.scales.x.max;
+      other.update('none');
+    });
+    options.plugins.zoom.zoom.onZoom = sync; options.plugins.zoom.pan.onPan = sync;
+    const reset = document.createElement('button'); reset.textContent = 'Reset zoom'; reset.type = 'button';
+    reset.addEventListener('click', () => activeCharts.forEach(chart => chart.resetZoom()));
+    const tools = document.createElement('div'); tools.className = 'chart-tools'; tools.appendChild(reset); card.appendChild(tools);
+    activeCharts.push(new Chart(card.querySelector('canvas'), { type: 'line', data: { datasets }, options }));
+  });
 }
 
 function renderITICDiagram(container, items) {

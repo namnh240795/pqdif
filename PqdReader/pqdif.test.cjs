@@ -60,8 +60,11 @@ test('viewer loads the shared library, prepares every observation, and exports m
         assert.ok(dataset.data.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)));
       }
       this.config = config;
+      this.options = config.options;
+      this.scales = { x: { min: config.options.scales.x.min, max: config.options.scales.x.max } };
       charts.push(this);
     }
+    update(mode) { this.updateMode = mode; }
     destroy() { this.destroyed = true; }
   }});
   vm.runInContext(librarySource, context);
@@ -69,6 +72,7 @@ test('viewer loads the shared library, prepares every observation, and exports m
   await vm.runInContext('loadFile(file)', context);
   assert.equal(document.getElementById('controls').style.display, 'flex');
   assert.match(document.getElementById('meta').textContent, /29 observations/);
+  assert.equal(document.getElementById('chartType').value, 'level-time', 'Level Time Diagram is the default analysis');
   assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(LOGICAL)', context)), expected);
   for (const type of ['trend', 'osc', 'harmonics', 'level-time', 'itic']) {
     document.getElementById('chartType').value = type;
@@ -81,9 +85,86 @@ test('viewer loads the shared library, prepares every observation, and exports m
     }
     if (type === 'level-time') {
       const levelTimeCharts = charts.slice(priorChartCount);
-      assert.ok(levelTimeCharts.some(chart => chart.config.data.datasets.some(dataset => dataset.label.startsWith('F ·'))),
-        'Level Time Diagram should plot frequency data');
+      assert.equal(levelTimeCharts.length, 1, 'Level Time Diagram should render one frequency chart');
+      const frequencyDatasets = levelTimeCharts[0].config.data.datasets;
+      assert.deepStrictEqual(Array.from(frequencyDatasets, dataset => dataset.label), ['f', 'f min', 'f max']);
+      assert.ok(frequencyDatasets.every(dataset => dataset.data.length === 1009),
+        'Level Time Diagram should show the complete 7-day recording at 10-minute cadence');
+      assert.ok(frequencyDatasets.every(dataset =>
+        dataset.data.at(-1).x - dataset.data[0].x >= 7 * 24 * 60 * 60 * 1000),
+        'Level Time Diagram should retain the full recording date range');
+      assert.ok(frequencyDatasets.every(dataset => dataset.data.every(point => point.y !== 0)),
+        'empty zero-only frequency data should not be shown as a measurement');
     }
+  }
+  document.getElementById('chartType').value = 'level-time';
+  document.getElementById('levelMeasurement').value = 'voltage';
+  const voltageStart = charts.length;
+  vm.runInContext('updateAnalysisView()', context);
+  const voltageCharts = charts.slice(voltageStart).map(chart => chart.config);
+  assert.equal(voltageCharts.length, 5, 'separate RMS, extremes, and extra voltage channels');
+  assert.ok(voltageCharts.every(chart => chart.options.scales.y.title.text === 'Voltage (V)'));
+  assert.deepStrictEqual(voltageCharts.map(chart => chart.data.datasets.length), [4, 3, 8, 6, 3]);
+  const voltageChart = { data: { datasets: voltageCharts.flatMap(chart => chart.data.datasets) } };
+  const voltageObservation = expected.observations.find(o => o.name.startsWith('Steady State Voltage RMS'));
+  const voltageChannels = voltageObservation.channels.filter(c => c.series.some(s => s.units === 'Volts'));
+  assert.equal(voltageChart.data.datasets.length, 24);
+  for (const channel of voltageChannels) {
+    for (const series of channel.series.filter(s => s.units === 'Volts')) {
+      const label = `${channel.name} · ${library.seriesValueTypeNames[series.valueType]}`;
+      const dataset = voltageChart.data.datasets.find(d => d.label === label);
+      assert.ok(dataset, label);
+      assert.deepStrictEqual(Array.from(dataset.data, p => p.y), series.values);
+      assert.equal(dataset.data[1].x - dataset.data[0].x, 600000);
+    }
+  }
+  const zoomSource = charts[voltageStart];
+  zoomSource.scales.x = { min: voltageChart.data.datasets[0].data[2].x,
+    max: voltageChart.data.datasets[0].data[8].x };
+  zoomSource.options.plugins.zoom.zoom.onZoom({ chart: zoomSource });
+  for (const chart of charts.slice(voltageStart + 1)) {
+    assert.equal(chart.options.scales.x.min, zoomSource.scales.x.min);
+    assert.equal(chart.options.scales.x.max, zoomSource.scales.x.max);
+    assert.equal(chart.updateMode, 'none');
+  }
+  const end = voltageChart.data.datasets[0].data.at(-1).x;
+  vm.runInContext(`document.getElementById('rangeStart').value = localDateInputValue(${end - 3600000})`, context);
+  vm.runInContext('updateAnalysisView()', context);
+  assert.ok(charts.at(-1).config.data.datasets.every(d => d.data.length === 7),
+    'Voltage date filter must clip every line to the selected hour');
+  vm.runInContext('resetDataRange()', context);
+  for (const [key, count, points] of [
+    ['pst', 3, 1009], ['plt', 3, 84], ['thd', 24, 1009],
+    ['odd', 4, 1009], ['even', 4, 1009], ['harmonic', 4, 1009],
+    ['inter', 2, 1009], ['unbalance', 2, 1009], ['components', 3, 1009]
+  ]) {
+    document.getElementById('levelMeasurement').value = key;
+    const start = charts.length;
+    vm.runInContext('updateAnalysisView()', context);
+    const datasets = charts.slice(start).flatMap(chart => Array.from(chart.config.data.datasets));
+    assert.equal(datasets.length, count, key);
+    for (const dataset of datasets) {
+      const [, oi, ci, si] = dataset.sourceId.match(/^o(\d+)-c(\d+)-s(\d+)$/).map(Number);
+      const channel = expected.observations[oi].channels[ci];
+      assert.equal(dataset.data.length, points, key);
+      assert.deepStrictEqual(Array.from(dataset.data, p => p.y), channel.series[si].values, dataset.sourceId);
+      if (key === 'odd' || key === 'even') {
+        assert.equal(Number(channel.instance.channelGroupID), key === 'odd' ? 3 : 2);
+      }
+      if (key === 'plt') assert.equal(dataset.data[1].x - dataset.data[0].x, 7200000);
+    }
+    if (key === 'odd') {
+      document.getElementById('levelSubset').value = 'Group 5';
+      vm.runInContext('updateAnalysisView()', context);
+      assert.ok(charts.at(-1).config.data.datasets.every(d => d.label.includes('group 5')));
+    }
+  }
+  for (const key of ['angle', 'pwhd', 'supra', 'signal', 'signal-ext', 'prevailing', 'thd-ext', 'harmonic-ext', 'flicker-ext']) {
+    document.getElementById('levelMeasurement').value = key;
+    const start = charts.length;
+    vm.runInContext('updateAnalysisView()', context);
+    assert.equal(charts.length, start, key + ' must not fabricate unavailable measurements');
+    assert.match(document.getElementById('charts').textContent, /no matching measurements/);
   }
   assert.match(document.getElementById('eventSummary').textContent, /events/);
   const routing = vm.runInContext(`(() => {
