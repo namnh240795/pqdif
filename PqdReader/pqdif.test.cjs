@@ -47,7 +47,7 @@ test('viewer loads the shared library, prepares every observation, and exports m
   const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
   assert.match(html, /<script src="\.\/lib\/pqdif\.js"><\/script>/);
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  const context = vm.createContext({ document, ArrayBuffer, Uint8Array, DataView,
+  const context = vm.createContext({ document, ArrayBuffer, Uint8Array, DataView, TextDecoder,
     pako: { inflate: inflateSync }, Blob, console,
     URL: { createObjectURL(blob) { downloadedBlob = blob; return 'blob:test'; }, revokeObjectURL() {} },
     setTimeout(callback) { callback(); },
@@ -174,9 +174,101 @@ test('viewer loads the shared library, prepares every observation, and exports m
     return [matchesChart(item, 'osc'), matchesChart(item, 'trend'), matchesChart(item, 'harmonics'),
       points.axis, points.points.map(p => p.x)];
   })()`, context);
-  assert.deepStrictEqual(JSON.parse(JSON.stringify(routing)), [true, true, false, 'Sample index', [0, 2]]);
-  assert.equal(vm.runInContext("matchesChart({channel:{quantityTypeName:'Response',name:'Spectrum'}}, 'harmonics')", context), true);
-  assert.equal(vm.runInContext("matchesChart({channel:{quantityTypeName:'ValueLog',name:'Voltage THD'}}, 'harmonics')", context), true);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(routing)), [true, false, false, 'Sample index', [0, 2]]);
+  assert.equal(vm.runInContext("matchesChart({channel:{quantityTypeName:'Response',name:'Spectrum'}}, 'harmonics')", context), false);
+  assert.equal(vm.runInContext("matchesChart({channel:{quantityTypeName:'ValueLog',name:'Voltage THD'}}, 'harmonics')", context), false);
+  // Historical analyses use real fixture values and retain the meaning of both axes.
+  document.getElementById('chartType').value = 'harmonics';
+  vm.runInContext('resetDataRange(); updateAnalysisView()', context);
+  let rendered = vm.runInContext('activeCharts', context);
+  assert.equal(rendered.length, 2);
+  assert.deepEqual(Array.from(rendered[0].config.data.datasets, d => d.label), ['U1','U2','U3']);
+  assert.deepEqual(Array.from(rendered[1].config.data.datasets, d => d.label), ['I1','I2','I3']);
+  assert.ok(rendered.every(c => c.config.type === 'bar'));
+  const expectedU1 = actual.observations[15].channels.find(c => c.name === 'H U1' && c.instance.channelGroupID === '3');
+  assert.equal(rendered[0].config.data.datasets[0].data.find(p=>p.x===3).y, expectedU1.series[1].values.at(-1));
+  assert.equal(rendered[0].config.data.datasets[0].data.length, 51);
+
+  document.getElementById('chartType').value = 'thd-trend';
+  vm.runInContext('updateAnalysisView()', context);
+  rendered = vm.runInContext('activeCharts', context);
+  assert.equal(rendered[0].config.data.datasets.length, 3);
+  assert.match(rendered[0].config.options.scales.x.ticks.callback(Date.parse('2024-09-01T00:00:00Z')), /2024/);
+  vm.runInContext("analysisSelections.set('thd-trend', new Set()); renderCharts()", context);
+  assert.equal(vm.runInContext('activeCharts.length', context), 0, 'deselecting all does not restore default channels');
+
+  document.getElementById('chartType').value = 'histogram';
+  document.getElementById('histogramWidth').value = '0.01';
+  vm.runInContext('updateAnalysisView()', context);
+  rendered = vm.runInContext('activeCharts', context);
+  assert.equal(rendered.length, 1);
+  assert.equal(rendered[0].config.data.datasets[0].data.reduce((n,p)=>n+p.y,0), 1009);
+  assert.match(rendered[0].config.options.scales.y.title.text, /count/);
+  assert.throws(() => vm.runInContext('buildHistogram(seriesCatalog[0], 0)',context), /Resolution/);
+  const million = vm.runInContext(`(() => {
+    const time = {valueTypeName:'Time',values:Array.from({length:1000000},(_,i)=>i)};
+    const values = {values:Array.from({length:1000000},(_,i)=>i%2 ? 50.01 : 50)};
+    const item = {observation:{startTime:'2024-09-01T00:00:00Z'},channel:{series:[time,values]},series:values};
+    return buildHistogram(item,0.01,{start:null,end:null,invalid:false});
+  })()`,context);
+  assert.equal(million.total,1000000);
+  assert.deepEqual(Array.from(million.points,p=>p.y),[500000,500000]);
+
+  document.getElementById('chartType').value = 'scatter';
+  vm.runInContext('updateAnalysisView()',context);
+  rendered = vm.runInContext('activeCharts',context);
+  assert.equal(rendered[0].config.type,'scatter');
+  const pair = rendered[0].config.data.datasets[0].data[0];
+  const power = actual.observations[12].channels;
+  assert.equal(pair.x,power.find(c=>c.name==='PTot').series[1].values[0]);
+  assert.equal(pair.y,power.find(c=>c.name==='QTot').series[1].values[0]);
+  vm.runInContext('swapScatterAxes()',context);
+  assert.equal(vm.runInContext('activeCharts[0].config.data.datasets[0].data[0].x',context),pair.y);
+  const unmatched = vm.runInContext(`(() => {
+    const item = seriesCatalog.find(i=>i.id===document.getElementById('scatterX').value);
+    const other = {...item,observation:{...item.observation,startTime:'2001-01-01T00:00:00Z'}};
+    return pairMeasurements(item,other).length;
+  })()`,context);
+  assert.equal(unmatched,0);
+  assert.equal(vm.runInContext('iticEventPoints().length',context),0,'sample cannot invent ITIC markers');
+  assert.equal(vm.runInContext('iticRmsStatus(0.1,60)',context),'Outside envelope');
+  assert.equal(vm.runInContext('iticRmsStatus(0.5,70)',context),'Inside envelope');
+  assert.equal(vm.runInContext('iticRmsStatus(11,80)',context),'Outside envelope');
+  assert.equal(vm.runInContext('iticRmsStatus(0.001,150)',context),'Not assessed');
+
+  const cfg = ['Test,Device,1999','2,1A,1D','1,U1,A,,V,2,1,0,-32767,32767,1,1,P','1,Trip,,0','50','1','1000,2','01/09/2024,00:00:00.000000','01/09/2024,00:00:00.001000','ASCII','1'].join('\n');
+  context.comtradeCfg = cfg;
+  context.comtradeDat = new TextEncoder().encode('1,0,10,0\n2,1000,20,1').buffer;
+  let recording = vm.runInContext('parseComtrade(comtradeCfg,comtradeDat)',context);
+  assert.equal(recording.channels[0].points[0].y,21);
+  assert.equal(recording.channels[0].points[1].y,41);
+  assert.equal(recording.channels[0].points[1].x-recording.channels[0].points[0].x,1);
+  for (const format of ['BINARY','BINARY32','FLOAT32']) {
+    const size = format === 'BINARY' ? 12 : 14;
+    const buffer = new ArrayBuffer(size*2), view = new DataView(buffer);
+    for (let i=0;i<2;i++) {
+      view.setUint32(i*size,i+1,true); view.setUint32(i*size+4,1000*i,true);
+      if(format==='BINARY') view.setInt16(i*size+8,10*(i+1),true);
+      else if(format==='BINARY32') view.setInt32(i*size+8,10*(i+1),true);
+      else view.setFloat32(i*size+8,10*(i+1),true);
+    }
+    context.comtradeCfg = cfg.replace('ASCII',format); context.comtradeDat=buffer;
+    recording=vm.runInContext('parseComtrade(comtradeCfg,comtradeDat)',context);
+    assert.equal(recording.channels[0].points[1].y,41);
+    context.comtradeDat=buffer.slice(0,-1);
+    assert.throws(()=>vm.runInContext('parseComtrade(comtradeCfg,comtradeDat)',context),/Truncated/);
+  }
+  const markers = vm.runInContext(`(() => {
+    const previous=LOGICAL;
+    const nominal={valueTypeName:'Values',units:'Volts',nominalQuantity:100,values:[60]};
+    const duration={valueTypeName:'Duration',units:'Seconds',unitsID:1,values:[0.1]};
+    LOGICAL={observations:[{name:'Synthetic sag',startTime:previous.observations[0].startTime,channels:[{name:'U1',quantityTypeName:'MagDur',quantityMeasured:'Voltage',series:[duration,nominal]}]}]};
+    try { return iticEventPoints(); } finally {LOGICAL=previous;}
+  })()`,context);
+  assert.equal(markers.length,1);
+  assert.equal(markers[0].status,'Outside envelope');
+  assert.equal(markers[0].y,60);
+
   assert.ok(charts.length > 0);
   assert.equal(charts[0].destroyed, true);
   vm.runInContext('downloadJson()', context);

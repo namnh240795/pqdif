@@ -95,9 +95,30 @@
       <option value="level-time">Level Time Diagram</option>
       <option value="trend">Trend</option>
       <option value="osc">Oscilloscope (OSC)</option>
-      <option value="harmonics">Harmonics</option>
+      <option value="harmonics">Harmonics · phase spectrum</option>
+      <option value="thd-trend">THD Voltage · Trend</option>
+      <option value="histogram">Histogram</option>
+      <option value="scatter">Scatter Plot</option>
       <option value="itic">ITIC / Events</option>
     </select>
+  </div>
+  <div id="analysisControls" style="display:none;flex-basis:100%">
+    <label for="analysisChannels">Channels to compare (Ctrl / Cmd to select multiple)</label><br>
+    <select id="analysisChannels" multiple size="6" style="max-width:100%;width:760px" onchange="captureAnalysisSelection()"></select>
+    <div id="distributionControls" style="display:none">
+      <label for="histogramWidth">Resolution in measurement unit</label>
+      <input id="histogramWidth" type="number" min="0.00001" step="0.01" value="0.01" onchange="renderCharts()">
+    </div>
+    <div id="scatterControls" style="display:none">
+      <label for="scatterX">X channel</label><select id="scatterX" onchange="renderCharts()"></select>
+      <label for="scatterY">Y channel</label><select id="scatterY" onchange="renderCharts()"></select>
+      <button type="button" onclick="swapScatterAxes()">Swap axes</button>
+    </div>
+    <div id="spectrumControls" style="display:none">
+      <label for="spectrumTime">Spectrum at recorded timestamp</label>
+      <select id="spectrumTime" onchange="renderCharts()"></select>
+    </div>
+    <p id="analysisHelp" class="series-note"></p>
   </div>
   <div id="levelMeasurementControl">
     <label for="levelMeasurement">Measurement / Voltage group</label><br>
@@ -156,6 +177,9 @@
 <section id="eventPanel" class="series-panel" style="display:none" aria-labelledby="eventsHeading">
   <h2 id="eventsHeading">Events</h2>
   <p id="eventSummary" aria-live="polite"></p>
+  <label for="comtradeFiles">Associate a COMTRADE .cfg + .dat pair with the selected event</label>
+  <input id="comtradeFiles" type="file" accept=".cfg,.dat" multiple onchange="attachEventComtrade(this.files)">
+  <p id="comtradeStatus" aria-live="polite">No COMTRADE files loaded. Files stay in this browser.</p>
   <div class="series-scroll" tabindex="0" role="region" aria-label="PQDIF events">
     <table><thead><tr><th>View</th><th>Time</th><th>Type</th><th>Event</th><th>Trigger</th><th>Channels</th></tr></thead><tbody id="eventRows"></tbody></table>
   </div>
@@ -195,9 +219,9 @@
     <div class="flow-node"><strong>Eligibility → selection → source lookup</strong><small>Require <code>count &gt; 1</code> and <code>normalizationApplied === true</code>. Resolve the selected <code>o#-c#-s#</code> catalog ID to the original series, then read <code>series.values</code>.</small></div>
     <div class="flow-down" aria-hidden="true">↓</div>
     <div class="flow-row">
-      <div class="flow-node chart"><strong>Trend</strong><small>Select an eligible non-Time series.</small><small><code>series.values</code> → SVG line chart.</small></div>
-      <div class="flow-node chart"><strong>Oscilloscope (OSC)</strong><small>Select an eligible <code>Waveform</code> series.</small><small><code>series.values</code> → SVG line chart. No additional RMS calculation or waveform reconstruction.</small></div>
-      <div class="flow-node chart"><strong>Harmonics</strong><small>First eligible <code>Response</code> series, or a channel/quantity name containing harmonic, thd, or interharm.</small><small><code>series.values</code> → SVG bars. X = stored array index; Y = normalized value. Harmonic order is not inferred.</small></div>
+      <div class="flow-node chart"><strong>Trend</strong><small>Select an eligible non-Time series.</small><small>Selected channels → dated line charts, separated by measurement family and unit.</small></div>
+      <div class="flow-node chart"><strong>Oscilloscope (OSC)</strong><small>Select an eligible <code>Waveform</code> series.</small><small>Selected channels → dated line charts, separated by measurement family and unit. No additional RMS calculation or waveform reconstruction.</small></div>
+      <div class="flow-node chart"><strong>Harmonics</strong><small>Individual voltage/current harmonic channels at a selected recorded timestamp.</small><small>Grouped phase columns. X = export channel-group harmonic order; Y = recorded magnitude. Voltage and current have separate axes/cards.</small></div>
     </div>
     <p class="flow-note">In the reference mapping, increment-encoded series are kept raw and excluded from plotting. Trend and OSC ignore non-finite samples and downsample displays above 1,800 finite points only for rendering; the original arrays remain unchanged.</p>
   </section>
@@ -232,6 +256,7 @@
 // ===== TRMS Viewer =====
 let LOGICAL = null;
 let activeCharts = [];
+let eventDetailCharts = [];
 
 const PHASE_COLORS = {
   'A': { line: '#f87171', bg: 'rgba(248,113,113,0.1)' },
@@ -320,7 +345,7 @@ let fileDateRange = null;
 
 function isTimeSeries(series) {
   return series.valueType === 'c690e862-f755-11cf-9d89-0080c72e70a3' ||
-    (series.valueTypeName || '').toLowerCase() === 'time' || series.unitsID === 1;
+    (series.valueTypeName || '').toLowerCase() === 'time';
 }
 
 function buildSeriesCatalog(data) {
@@ -364,7 +389,7 @@ function absoluteSampleTime(item, index, timeSeries = itemTimeAxis(item)) {
 
 function getSeriesTimeBounds(item) {
   const timeSeries = itemTimeAxis(item);
-  if (timeSeries && timeSeries.values.every(v => Number.isFinite(Number(v)))) {
+  if (timeSeries) {
     const start = absoluteSampleTime(item, 0, timeSeries);
     const end = absoluteSampleTime(item, timeSeries.values.length - 1, timeSeries);
     if (start !== null && end !== null) return { start: Math.min(start, end), end: Math.max(start, end), hasSampleTimes: true };
@@ -422,14 +447,15 @@ function matchesChart(item, type) {
   const quantity = (item.channel.quantityTypeName || '').toLowerCase();
   if (type === 'level-time') return isLevelTimeSeries(item);
   if (type === 'osc') return quantity === 'waveform';
-  if (type === 'harmonics') return quantity === 'response' || /harmonic|thd|interharm/i.test(`${item.channel.name} ${item.channel.definition?.quantityName || ''}`);
-  return type === 'trend';
+  if (type === 'harmonics') return isSpectrumSeries(item);
+  if (type === 'thd-trend') return /Steady State Voltage THD/.test(item.observation.name);
+  return ['trend', 'histogram', 'scatter'].includes(type) && item.channel.quantityTypeName === 'ValueLog' && Boolean(itemTimeAxis(item));
 }
 
 const NO_DISTURBANCE_ID = '67f6af8f-f753-11cf-9d89-0080c72e70a3';
 
 function isEventObservation(obs) {
-  return obs.triggerMethod === 'Channel' ||
+  return obs.channels?.some(c => /^MagDur(?:Time)?$/.test(c.quantityTypeName)) || obs.triggerMethod === 'Channel' ||
     (obs.disturbanceCategoryID && obs.disturbanceCategoryID !== NO_DISTURBANCE_ID);
 }
 
@@ -457,6 +483,7 @@ function updateAnalysisView() {
   const type = document.getElementById('chartType').value || 'trend';
   document.getElementById('levelMeasurementControl').style.display = type === 'level-time' ? 'block' : 'none';
   updateLevelSubset(type);
+  updateAnalysisControls(type);
   const indices = matchingObservationIndices(type);
   const range = currentDataRange();
   document.getElementById('timezoneName').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time';
@@ -478,7 +505,7 @@ function renderEventList(indices) {
   const counts = { Sag: 0, Swell: 0, Transient: 0, Event: 0 };
   indices.forEach(index => { counts[eventType(LOGICAL.observations[index])]++; });
   const summary = indices.length
-    ? `${indices.length} events · ${counts.Sag} sags · ${counts.Swell} swells · ${counts.Transient} transients. Select an event to inspect its stored waveform and measurement series. This file does not include ITIC duration/magnitude metadata or compliance limits.`
+    ? `${indices.length} events · ${counts.Sag} sags · ${counts.Swell} swells · ${counts.Transient} transients. Select an event to inspect its stored waveform and measurement series. ITIC markers require recorded duration and nominal-normalized event magnitude. Click a row to open its stored measurements; COMTRADE is a separate file format.`
     : 'No PQDIF events fall inside this time range.';
   document.getElementById('eventSummary').textContent = summary;
   indices.forEach(index => {
@@ -488,7 +515,7 @@ function renderEventList(indices) {
     const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'pqdif-event';
     radio.checked = selectedEventIndex === index;
     radio.setAttribute('aria-label', `View ${eventType(obs)} event ${obs.name}`);
-    radio.addEventListener('change', () => { selectedEventIndex = index; selectedSeriesId = null; renderCharts(); renderEventList(indices); });
+    radio.addEventListener('change', () => { selectedEventIndex = index; selectedSeriesId = null; renderCharts(); renderEventList(indices); openEventWaveform(index); });
     selectCell.appendChild(radio); row.appendChild(selectCell);
     const start = observationStartMs(obs);
     const fields = [start === null ? 'Time not recorded' : new Date(start).toLocaleString(),
@@ -496,7 +523,7 @@ function renderEventList(indices) {
     fields.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
     row.addEventListener('click', event => {
       if (event.target === radio) return;
-      selectedEventIndex = index; selectedSeriesId = null; renderCharts(); renderEventList(indices);
+      selectedEventIndex = index; selectedSeriesId = null; renderCharts(); renderEventList(indices); openEventWaveform(index);
     });
     tbody.appendChild(row);
   });
@@ -504,6 +531,10 @@ function renderEventList(indices) {
 
 function populateObservations() {
   seriesCatalog = buildSeriesCatalog(LOGICAL);
+  analysisSelections.clear();
+  eventComtrade.clear();
+  document.getElementById('comtradeFiles').value = '';
+  document.getElementById('comtradeStatus').textContent = 'No COMTRADE files loaded. Files stay in this browser.';
   levelSubsetKey = null;
   for (const option of Array.from(document.getElementById('levelMeasurement').options || [])) {
     if (!VOLTAGE_VIEWS[option.value]) continue;
@@ -521,7 +552,7 @@ function populateObservations() {
 }
 
 function renderCharts() {
-  activeCharts.forEach(chart => chart.destroy()); activeCharts = [];
+  activeCharts.forEach(chart => chart.destroy()); activeCharts = []; eventDetailCharts = [];
   if (!LOGICAL) return;
   const type = document.getElementById('chartType').value || 'trend';
   const eventIndex = selectedEventIndex;
@@ -567,7 +598,8 @@ function renderCharts() {
     values.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
     table.appendChild(row);
   });
-  if (type === 'level-time') renderLevelTimeDiagram(container, items);
+  if (['trend', 'thd-trend', 'histogram', 'scatter', 'harmonics'].includes(type)) renderAdditionalAnalysis(container, items, type);
+  else if (type === 'level-time') renderLevelTimeDiagram(container, items);
   else renderGroupedElectricalSeries(container, items, type);
 }
 
@@ -954,28 +986,390 @@ function renderVoltageView(container, items, key) {
   });
 }
 
+// Analysis selections are preserved independently when switching chart types.
+const analysisSelections = new Map();
+const ANALYSIS_COLORS = ['#60a5fa', '#fbbf24', '#f87171', '#a78bfa', '#34d399', '#fb923c'];
+function isSpectrumSeries(item) {
+  return /Steady State Individual (Voltage|Current) Harmonics\b/.test(item.observation?.name || '') &&
+    /\b[UI][123]\b/.test(item.channel.name) && harmonicGroup(item) !== null &&
+    !['Degrees', 'Radians'].includes(item.series.units) && Boolean(itemTimeAxis(item));
+}
+function analysisLabel(item) {
+  return `${item.channel.name} · ${item.label} [${item.series.units}] · ${item.observation.name} · ${item.id}`;
+}
+function replaceAnalysisOptions(id, entries, selected) {
+  const select = document.getElementById(id); select.innerHTML = '';
+  entries.forEach(entry => {
+    const option = document.createElement('option'); option.value = entry.value; option.textContent = entry.label;
+    option.selected = selected.includes(entry.value); select.appendChild(option);
+  });
+  if (!select.multiple) select.value = selected[0] || '';
+}
+function captureAnalysisSelection() {
+  const type = document.getElementById('chartType').value;
+  analysisSelections.set(type, new Set(Array.from(document.getElementById('analysisChannels').selectedOptions || [], option => option.value)));
+  renderCharts();
+}
+function swapScatterAxes() {
+  const x = document.getElementById('scatterX'), y = document.getElementById('scatterY');
+  [x.value, y.value] = [y.value, x.value]; renderCharts();
+}
+function updateAnalysisControls(type) {
+  const enabled = ['trend', 'thd-trend', 'histogram', 'scatter', 'harmonics'].includes(type);
+  document.getElementById('analysisControls').style.display = enabled ? 'block' : 'none';
+  if (!enabled) return;
+  const items = seriesCatalog.filter(item => matchesChart(item, type) && overlapsDataRange(item.timeBounds));
+  const spectrum = type === 'harmonics';
+  const entries = spectrum ? [...new Set(items.map(item => item.channel.name.match(/\b[UI][123]\b/)[0]))]
+    .map(value => ({ value, label: value })) : items.map(item => ({ value: item.id, label: analysisLabel(item) }));
+  if (!analysisSelections.has(type)) {
+    let defaults = items.filter(item => type === 'thd-trend' ? /^THDF U[123]$/.test(item.channel.name) : item.series.units === 'Hertz' && item.series.values.some(v => v > 0));
+    analysisSelections.set(type, new Set(spectrum ? entries.map(e => e.value) : (defaults.length ? defaults : items).slice(0, type === 'histogram' ? 1 : 3).map(item => item.id)));
+  }
+  document.getElementById('analysisChannels').multiple = type !== 'histogram';
+  replaceAnalysisOptions('analysisChannels', entries, [...analysisSelections.get(type)]);
+  document.getElementById('analysisChannels').style.display = type === 'scatter' ? 'none' : 'block';
+  document.getElementById('analysisChannels').multiple = type !== 'histogram';
+  document.getElementById('distributionControls').style.display = type === 'histogram' ? 'block' : 'none';
+  document.getElementById('scatterControls').style.display = type === 'scatter' ? 'block' : 'none';
+  document.getElementById('spectrumControls').style.display = spectrum ? 'block' : 'none';
+  if (type === 'scatter') {
+    for (const [id, preferred] of [['scatterX', /^PTot$/], ['scatterY', /^QTot$/]]) {
+      const current = document.getElementById(id).value;
+      const chosen = items.find(item => item.id === current) || items.find(item => preferred.test(item.channel.name)) || items[id === 'scatterX' ? 0 : 1];
+      replaceAnalysisOptions(id, entries, chosen ? [chosen.id] : []);
+    }
+  }
+  if (spectrum) {
+    const times = [...new Set(items.flatMap(item => rawTimedPoints(item).map(p => p.x)))].sort((a, b) => a - b);
+    const current = document.getElementById('spectrumTime').value;
+    replaceAnalysisOptions('spectrumTime', times.map(t => ({value: String(t), label: new Date(t).toLocaleString('en-GB')})),
+      [times.includes(Number(current)) ? current : String(times.at(-1) ?? '')]);
+  }
+  document.getElementById('analysisHelp').textContent = type === 'histogram'
+    ? 'One channel. Every finite sample in the date range is counted; bins are [lower, upper). Resolution uses the selected channel unit.'
+    : type === 'scatter' ? 'X and Y are measured values. Pairs require identical recorded timestamps; unmatched samples are omitted.'
+    : spectrum ? 'A spectrum is one recorded instant, not time samples used as harmonic orders. For this export, order comes from channel-group IDs. U and I retain their recorded units.'
+    : 'Select channels to compare. Dates use the local timezone shown above; incompatible measurement families are placed in separate charts.';
+}
+function forEachTimedValue(item, visit, range = currentDataRange()) {
+  const time = itemTimeAxis(item);
+  if (!time || range.invalid) return;
+  item.series.values.forEach((y, index) => {
+    const x = absoluteSampleTime(item, index, time);
+    if (Number.isFinite(y) && x !== null && overlapsDataRange({start:x,end:x}, range)) visit(x, y, index);
+  });
+}
+function rawTimedPoints(item) {
+  const points = []; forEachTimedValue(item, (x, y) => points.push({x, y})); return points;
+}
+function buildHistogram(item, width, range = currentDataRange()) {
+  if (!Number.isFinite(width) || width < 0.00001) throw new Error('Resolution must be a finite number ≥ 0.00001.');
+  const counts = new Map(); let total = 0, first = Infinity, last = -Infinity;
+  forEachTimedValue(item, (_, y) => {
+    const quotient = y / width;
+    const bin = Math.floor(quotient + Number.EPSILON * Math.abs(quotient) * 4);
+    if (!Number.isSafeInteger(bin)) throw new Error('Resolution is too small for this measurement.');
+    first = Math.min(first, bin); last = Math.max(last, bin);
+    if (last - first > 20000) throw new Error('More than 20,000 bins. Increase the resolution width or narrow the date range.');
+    counts.set(bin, (counts.get(bin) || 0) + 1); total++;
+  }, range);
+  if (!total) return {points: [], total};
+  if (last - first > 20000) throw new Error('More than 20,000 bins. Increase the resolution width or narrow the date range.');
+  const points = [];
+  for (let bin = first; bin <= last; bin++) points.push({ x: (bin + 0.5) * width, y: counts.get(bin) || 0, lower: bin * width, upper: (bin + 1) * width });
+  return { points, total };
+}
+function pairMeasurements(xItem, yItem) {
+  const xValues = new Map();
+  forEachTimedValue(xItem, (t, value) => xValues.set(t, value));
+  const points = [];
+  forEachTimedValue(yItem, (t, y) => { if (xValues.has(t)) points.push({x:xValues.get(t), y, timestamp:t}); });
+  return points;
+}
+function analysisChart(container, title, type, datasets, options, noteText) {
+  if (!datasets.length) return;
+  const card = createChartCard(container, title);
+  const note = document.createElement('p'); note.className = 'series-note'; note.textContent = noteText; card.appendChild(note);
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset zoom'; card.appendChild(reset);
+  options.animation = false;
+  const chart = new Chart(card.querySelector('canvas'), {type, data:{datasets}, options});
+  reset.addEventListener('click', () => chart.resetZoom()); activeCharts.push(chart);
+}
+function numericOptions(xLabel, yLabel) {
+  const options = chartOptions(yLabel);
+  options.interaction = {mode:'nearest', intersect:false};
+  options.scales.x.title.text = xLabel; delete options.scales.x.ticks.callback;
+  options.plugins.tooltip.callbacks.title = points => `${xLabel}: ${points[0]?.parsed.x}`;
+  return options;
+}
+function renderAdditionalAnalysis(container, items, type) {
+  const selection = analysisSelections.get(type) || new Set();
+  const selected = items.filter(item => selection.has(item.id));
+  if (type === 'histogram') {
+    const item = selected[0]; if (!item) { container.textContent = 'Select a channel for the histogram.'; return; }
+    try {
+      const width = Number(document.getElementById('histogramWidth').value);
+      const result = buildHistogram(item, width);
+      if (!result.total) { container.textContent = 'No finite samples in this date range.'; return; }
+      const options = numericOptions(`${item.channel.name} [${item.series.units}]`, 'Sample count');
+      options.scales.y.beginAtZero = true;
+      options.plugins.tooltip.callbacks.title = points => { const p = points[0]?.raw; return p ? `[${p.lower.toPrecision(8)}, ${p.upper.toPrecision(8)}) ${item.series.units}` : ''; };
+      options.plugins.tooltip.callbacks.label = point => `${point.parsed.y} samples (${(100 * point.parsed.y / result.total).toFixed(2)}%)`;
+      analysisChart(container, 'Histogram', 'bar', [{label:analysisLabel(item), data:result.points, backgroundColor:'#60a5fa', barPercentage:0.85, categoryPercentage:1}], options,
+        `${result.total.toLocaleString()} samples counted without downsampling · ${result.points.length} bins · width ${width} ${item.series.units}`);
+    } catch (error) { container.textContent = error.message; }
+    return;
+  }
+  if (type === 'scatter') {
+    const x = items.find(item => item.id === document.getElementById('scatterX').value);
+    const y = items.find(item => item.id === document.getElementById('scatterY').value);
+    if (!x || !y) { container.textContent = 'Select both X and Y channels.'; return; }
+    const paired = pairMeasurements(x, y);
+    if (!paired.length) { container.textContent = 'No matching timestamps in the selected range. Choose channels recorded at the same time.'; return; }
+    const stride = Math.max(1, Math.ceil(paired.length / 20000));
+    const points = paired.filter((_, i) => i % stride === 0);
+    const options = numericOptions(`${x.channel.name} · ${x.label} [${x.series.units}]`, `${y.channel.name} · ${y.label} [${y.series.units}]`);
+    options.plugins.tooltip.callbacks.title = entries => new Date(entries[0]?.raw.timestamp).toLocaleString('en-GB');
+    options.plugins.tooltip.callbacks.label = entry => [`${x.channel.name}: ${entry.parsed.x} ${x.series.units}`, `${y.channel.name}: ${entry.parsed.y} ${y.series.units}`];
+    analysisChart(container, 'Scatter Plot', 'scatter', [{label:`${x.channel.name} vs ${y.channel.name}`, data:points, pointRadius:2, backgroundColor:'#60a5fa99'}], options,
+      `${paired.length.toLocaleString()} matching timestamps · ${points.length.toLocaleString()} points displayed. No interpolation.`);
+    return;
+  }
+  if (type === 'harmonics') {
+    const timestamp = Number(document.getElementById('spectrumTime').value);
+    for (const quantity of ['U', 'I']) {
+      const datasets = [];
+      for (let phase = 1; phase <= 3; phase++) {
+        const name = `${quantity}${phase}`; if (!selection.has(name)) continue;
+        const points = [];
+        items.filter(item => new RegExp(`\\b${name}\\b`).test(item.channel.name)).forEach(item => {
+          forEachTimedValue(item, (t, y) => {if (t === timestamp) points.push({x:harmonicGroup(item), y});});
+        });
+        points.sort((a,b) => a.x-b.x);
+        if (points.length) datasets.push({label:name, data:points, backgroundColor:ANALYSIS_COLORS[phase-1]});
+      }
+      const options = numericOptions('Harmonic order (export channel group)', quantity === 'U' ? 'Volts' : 'Amps');
+      options.scales.x.ticks.stepSize = 1; options.scales.y.beginAtZero = true;
+      analysisChart(container, `${quantity === 'U' ? 'Voltage' : 'Current'} harmonic spectrum`, 'bar', datasets, options,
+        `${new Date(timestamp).toLocaleString('en-GB')} · Recorded magnitudes, including fundamental and DC when present.`);
+    }
+  } else {
+    const groups = new Map();
+    selected.forEach(item => {
+      const family = item.observation.name.replace(/\s+\d{4}-\d{2}-\d{2}.*$/, '');
+      const key = `${family} · ${item.series.units}`;
+      if (!groups.has(key)) groups.set(key, []); groups.get(key).push(item);
+    });
+    for (const [key, group] of groups) {
+      const datasets = group.map((item, i) => ({label:analysisLabel(item), data:seriesPoints(item,'trend').points,
+        borderColor:ANALYSIS_COLORS[i % ANALYSIS_COLORS.length], backgroundColor:ANALYSIS_COLORS[i % ANALYSIS_COLORS.length], pointRadius:0, borderWidth:1.3, spanGaps:false})).filter(d=>d.data.length);
+      const options = numericOptions('Date (DD/MM/YYYY) and time', group[0].series.units);
+      options.scales.x.ticks.callback = value => new Date(value).toLocaleString('en-GB');
+      options.plugins.tooltip.callbacks.title = entries => new Date(entries[0]?.parsed.x).toLocaleString('en-GB');
+      analysisChart(container, key, 'line', datasets, options, 'Date-filtered recorded samples. Click the legend to hide/show a channel. Lines above 1,800 points are reduced for display only.');
+    }
+  }
+  if (!activeCharts.length) container.textContent = 'Select channels with measurements in this date range.';
+}
+function openEventWaveform(index) {
+  eventDetailCharts.forEach(chart => chart.destroy());
+  activeCharts = activeCharts.filter(chart => !eventDetailCharts.includes(chart));
+  eventDetailCharts = [];
+  const chartStart = activeCharts.length;
+  const container = document.getElementById('charts');
+  const old = document.getElementById('eventWaveformDetail'); if (old) old.remove();
+  const detail = document.createElement('section'); detail.id = 'eventWaveformDetail'; container.appendChild(detail);
+  if (eventComtrade.has(index)) { renderComtrade(detail, eventComtrade.get(index)); eventDetailCharts = activeCharts.slice(chartStart); return; }
+  const note = document.createElement('p');
+  note.textContent = 'Stored PQDIF event measurements. No associated COMTRADE file/link is provided in this export.'; detail.appendChild(note);
+  const items = seriesCatalog.filter(item => item.oi === index);
+  renderGroupedElectricalSeries(detail, items, 'itic');
+  eventDetailCharts = activeCharts.slice(chartStart);
+}
+
+const eventComtrade = new Map();
+function comtradeDate(text) {
+  const match = text.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/);
+  if (!match) throw new Error('Unsupported COMTRADE date. Expected DD/MM/YYYY,HH:MM:SS.ffffff.');
+  const [, d, m, y, h, min, sec, fraction = ''] = match;
+  return new Date(Number(y), Number(m)-1, Number(d), Number(h), Number(min), Number(sec), Number((fraction+'000').slice(0,3))).getTime();
+}
+function parseComtrade(cfgText, buffer) {
+  const lines = cfgText.replace(/^\uFEFF/, '').trim().split(/\r?\n/);
+  const fields = line => line.split(',').map(v=>v.trim());
+  const revision = fields(lines[0] || '')[2];
+  if (!['1999', '2013'].includes(revision)) throw new Error('Supported COMTRADE CFG revisions: 1999 and 2013.');
+  const counts = fields(lines[1] || '');
+  const total = Number(counts[0]), analogCount = Number((counts[1] || '').replace(/A$/i,'')), digitalCount = Number((counts[2] || '').replace(/D$/i,''));
+  if (!Number.isInteger(analogCount) || analogCount < 1 || analogCount > 1000 || !Number.isInteger(digitalCount) || digitalCount < 0 || total !== analogCount+digitalCount) throw new Error('Invalid COMTRADE channel counts.');
+  const channels = [];
+  for (let i = 0; i < analogCount; i++) {
+    const f = fields(lines[2+i] || '');
+    const a = Number(f[5]), b = Number(f[6]), skew = Number(f[7] || 0);
+    if (f.length < 10 || !Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(skew)) throw new Error('Invalid COMTRADE analog channel calibration.');
+    channels.push({name:f[1],phase:f[2],unit:f[4],a,b,skew,points:[]});
+  }
+  let cursor = 2+total;
+  const frequency = Number(lines[cursor++]);
+  const rateCount = Number(lines[cursor++]);
+  if (!Number.isInteger(rateCount) || rateCount < 0 || rateCount > 1000) throw new Error('Invalid COMTRADE sample rates.');
+  const rates = [];
+  for (let i=0; i<rateCount; i++) {
+    const [rate,end] = fields(lines[cursor++]).map(Number);
+    if (!(rate>0) || !Number.isInteger(end) || end<1 || (rates.length && end<=rates.at(-1).end)) throw new Error('Invalid COMTRADE sample rate segment.');
+    rates.push({rate,end});
+  }
+  const start = comtradeDate(lines[cursor++]);
+  const trigger = comtradeDate(lines[cursor++]);
+  const format = String(lines[cursor++] || '').toUpperCase();
+  const multiplier = lines[cursor] === undefined ? 1 : Number(lines[cursor]);
+  if (!Number.isFinite(multiplier) || multiplier<=0) throw new Error('Invalid COMTRADE timestamp multiplier.');
+  function sampleTime(sample, rawTime) {
+    if (!Number.isFinite(rawTime) || rawTime < 0 || !Number.isInteger(sample) || sample < 1) throw new Error('Invalid COMTRADE timestamp/sample number.');
+    if (rawTime !== 0 || sample === 1) return rawTime * multiplier / 1000000;
+    let elapsed=0, previousEnd=0;
+    for (const segment of rates) {
+      if (sample<=segment.end) return elapsed + (sample-previousEnd-1)/segment.rate;
+      elapsed += (segment.end-previousEnd)/segment.rate; previousEnd=segment.end;
+    }
+    throw new Error('COMTRADE sample has no timestamp or valid sample rate.');
+  }
+  let sampleCount=0;
+  function append(sample, rawTime, values) {
+    const seconds = sampleTime(sample,rawTime);
+    channels.forEach((channel,i) => {
+      const value=values[i];
+      if (Number.isFinite(value)) channel.points.push({x:start+seconds*1000+channel.skew/1000,y:channel.a*value+channel.b});
+    });
+    sampleCount++;
+  }
+  if (format === 'ASCII') {
+    const rows = new TextDecoder().decode(buffer).trim().split(/\r?\n/);
+    for (const row of rows) {
+      const f = fields(row);
+      if (f.length < 2+total || f.slice(0,2+analogCount).some(v=>v==='')) throw new Error('Truncated COMTRADE ASCII record.');
+      const values = f.slice(2,2+analogCount).map(Number);
+      if (values.some(v=>!Number.isFinite(v))) throw new Error('Invalid COMTRADE ASCII sample.');
+      append(Number(f[0]),Number(f[1]),values);
+    }
+  } else if (['BINARY','BINARY32','FLOAT32'].includes(format)) {
+    const analogSize = format === 'BINARY' ? 2 : 4;
+    const recordSize = 8 + analogCount*analogSize + Math.ceil(digitalCount/16)*2;
+    const view = new DataView(buffer);
+    if (!buffer.byteLength || buffer.byteLength%recordSize) throw new Error('Truncated COMTRADE binary data.');
+    for (let offset=0; offset<buffer.byteLength; offset+=recordSize) {
+      const values=[];
+      for(let i=0;i<analogCount;i++) {
+        const pos=offset+8+i*analogSize;
+        const value=format==='FLOAT32' ? view.getFloat32(pos,true) : format==='BINARY32' ? view.getInt32(pos,true) : view.getInt16(pos,true);
+        const missing=format==='BINARY' ? -32768 : -2147483648;
+        values.push(format !== 'FLOAT32' && value===missing ? NaN : value);
+      }
+      append(view.getUint32(offset,true),view.getUint32(offset+4,true),values);
+    }
+  } else throw new Error(`Unsupported COMTRADE data format: ${format}.`);
+  if (!sampleCount) throw new Error('COMTRADE recording contains no samples.');
+  return {channels,start,trigger,frequency,sampleCount,format};
+}
+async function attachEventComtrade(files) {
+  const index=selectedEventIndex, source=LOGICAL;
+  const status=document.getElementById('comtradeStatus');
+  try {
+    if (index===null) throw new Error('Select the related PQDIF event first.');
+    const pair=Array.from(files), cfg=pair.find(f=>/\.cfg$/i.test(f.name)), dat=pair.find(f=>/\.dat$/i.test(f.name));
+    if (pair.length!==2 || !cfg || !dat || cfg.name.replace(/\.cfg$/i,'').toLowerCase()!==dat.name.replace(/\.dat$/i,'').toLowerCase()) throw new Error('Choose a matching .cfg and .dat pair with the same base name.');
+    const recording=parseComtrade(await cfg.text(),await dat.arrayBuffer());
+    if (LOGICAL !== source) throw new Error('The PQDIF file changed while loading COMTRADE. Select the event again.');
+    eventComtrade.set(index,recording);
+    status.textContent=`Associated ${cfg.name} with ${LOGICAL.observations[index].name}. ${recording.sampleCount} samples. COMTRADE times are interpreted in the displayed local timezone.`;
+    if (selectedEventIndex===index) openEventWaveform(index);
+  } catch(error) { status.textContent=error.message; }
+}
+function renderComtrade(container, recording) {
+  const groups=new Map();
+  recording.channels.forEach(channel=>{
+    if(!channel.points.length) return;
+    if(!groups.has(channel.unit)) groups.set(channel.unit,[]); groups.get(channel.unit).push(channel);
+  });
+  for(const [unit,channels] of groups) {
+    const datasets=channels.map((channel,i)=>{
+      const step=Math.max(1,Math.ceil(channel.points.length/10000));
+      return {label:channel.name,data:channel.points.filter((_,j)=>j%step===0),borderColor:ANALYSIS_COLORS[i%ANALYSIS_COLORS.length],pointRadius:0,borderWidth:1};
+    });
+    const options=numericOptions('Recorded date and time',unit);
+    options.scales.x.ticks.callback=value=>new Date(value).toLocaleString('en-GB');
+    options.plugins.tooltip.callbacks.title=entries=>new Date(entries[0]?.parsed.x).toLocaleString('en-GB');
+    analysisChart(container,`COMTRADE waveform · ${unit}`, 'line',datasets,options,
+      `${recording.format} · ${recording.sampleCount} samples · calibrated a×raw+b in recorded units · trigger ${new Date(recording.trigger).toLocaleString('en-GB')}. Large recordings are reduced for display only.`);
+  }
+}
+
+// RMS portion of the ITI (CBEMA) envelope; sub-cycle transients need peak/energy characterization.
+function iticRmsStatus(duration, percent) {
+  if (!Number.isFinite(duration) || duration < 0.02 || !Number.isFinite(percent) || percent < 0) return 'Not assessed';
+  const lower = duration <= 0.5 ? 70 : duration <= 10 ? 80 : 90;
+  const upper = duration <= 0.5 ? 120 : 110;
+  return percent < lower || percent > upper ? 'Outside envelope' : 'Inside envelope';
+}
+function iticEventPoints() {
+  const points = [];
+  matchingObservationIndices('itic').forEach(oi => {
+    const obs = LOGICAL.observations[oi];
+    obs.channels.forEach(channel => {
+      if (!/^MagDur(?:Time)?$/.test(channel.quantityTypeName) || !/voltage/i.test(channel.quantityMeasured || channel.definition?.quantityMeasured || '')) return;
+      const label = series => series.valueTypeName || Pqdif.seriesValueTypeNames[series.valueType];
+      const durations = channel.series.find(series => label(series) === 'Duration' && series.units === 'Seconds');
+      const magnitudes = channel.series.find(series => label(series) === 'Values' && series.units === 'Volts' && Number(series.nominalQuantity) > 0);
+      if (!durations || !magnitudes || durations.values.length !== magnitudes.values.length || magnitudes.normalizationApplied === false) return;
+      const time = channel.series.find(isTimeSeries);
+      magnitudes.values.forEach((magnitude, i) => {
+        const duration = durations.values[i], percent = 100 * magnitude / Number(magnitudes.nominalQuantity);
+        const timestamp = time ? absoluteSampleTime({channel, series:magnitudes, observation:obs}, i, time) : observationStartMs(obs);
+        if (timestamp === null || !overlapsDataRange({start:timestamp,end:timestamp}) || !Number.isFinite(duration) || duration <= 0 || !Number.isFinite(percent) || percent < 0) return;
+        points.push({x:duration,y:percent,oi,channel:channel.name,timestamp,status:iticRmsStatus(duration,percent)});
+      });
+    });
+  });
+  return points;
+}
 function renderITICDiagram(container, items) {
-  const card = createChartCard(container, 'ITIC · Voltage vs Duration');
-  const tools = document.createElement('div'); tools.className = 'chart-tools';
-  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset zoom';
-  tools.appendChild(reset); card.appendChild(tools);
+  const points = iticEventPoints();
+  const card = createChartCard(container, 'ITIC / CBEMA · RMS event assessment (20 ms and longer)');
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset zoom'; card.appendChild(reset);
   const note = document.createElement('p'); note.className = 'series-note';
-  note.textContent = `${items.length} disturbance channels are available. This PQDIF export has waveform/RMS samples, but no explicit event duration, nominal voltage, characterization magnitude, or compliance limits; event markers cannot be positioned reliably.`;
+  note.textContent = points.length
+    ? `${points.length} characterized events. Red crosses are outside the reference envelope; green circles are inside; grey markers are not assessed. Click a marker to inspect stored event measurements.`
+    : `${items.length} disturbance series available, but no usable MagDur voltage magnitude + duration + nominal voltage. Event markers and compliance results cannot be inferred from recording length. Select an event row to open its stored waveform/RMS.`;
   card.appendChild(note);
-  const options = chartOptions('% of nominal voltage');
-  options.scales.x.type = 'logarithmic'; options.scales.x.min = 0.001; options.scales.x.max = 100;
-  options.scales.x.title.text = 'Duration';
+  const scope = document.createElement('p'); scope.className = 'series-note';
+  scope.textContent = 'Reference ITI envelope for 120 V single-phase IT equipment; this is not a certification of the 10 kV network. Sub-cycle peak/energy transients are not assessed. To open a related COMTRADE recording, select the event and associate its .cfg/.dat pair above. The sample export contains no such pair.';
+  card.appendChild(scope);
+  const options = numericOptions('Duration (seconds)', 'Voltage (% of nominal)');
+  options.scales.x.type = 'logarithmic'; options.scales.x.min = Math.min(0.02, ...points.map(p=>p.x)); options.scales.x.max = Math.max(100, ...points.map(p=>p.x));
   options.scales.x.ticks.callback = value => value < 1 ? `${value * 1000} ms` : `${value} s`;
-  options.scales.y.min = 0; options.scales.y.max = 240;
-  options.scales.y.title.text = 'Voltage (% of nominal)';
-  const upper = [{ x: 0.001, y: 200 }, { x: 0.008, y: 140 }, { x: 0.1, y: 140 }, { x: 0.5, y: 120 }, { x: 2, y: 110 }, { x: 10, y: 110 }, { x: 100, y: 110 }];
-  const lower = [{ x: 0.001, y: 0 }, { x: 0.008, y: 70 }, { x: 0.5, y: 70 }, { x: 2, y: 80 }, { x: 10, y: 80 }, { x: 100, y: 90 }];
-  const chart = new Chart(card.querySelector('canvas'), { type: 'line', data: { datasets: [
-    { label: 'Upper limit', data: upper, borderColor: '#ef4444', backgroundColor: 'transparent', stepped: 'after', pointRadius: 0, borderWidth: 2 },
-    { label: 'Lower limit', data: lower, borderColor: '#ef4444', backgroundColor: 'transparent', stepped: 'after', pointRadius: 0, borderWidth: 2 }
-  ] }, options });
-  reset.addEventListener('click', () => chart.resetZoom());
-  activeCharts.push(chart);
+  options.scales.y.min = 0; options.scales.y.suggestedMax = 140;
+  options.plugins.tooltip.callbacks.title = entries => { const p = entries[0]?.raw; return p?.oi !== undefined ? new Date(p.timestamp).toLocaleString('en-GB') : 'ITI reference envelope'; };
+  options.plugins.tooltip.callbacks.label = entry => `${entry.raw.channel || entry.dataset.label}: ${entry.parsed.y.toFixed(2)}% · ${entry.parsed.x} s${entry.raw.status ? ' · '+entry.raw.status : ''}`;
+  options.onClick = (_, elements, chart) => {
+    const element = elements.find(e => chart.data.datasets[e.datasetIndex].data[e.index].oi !== undefined);
+    if (!element) return;
+    const point = chart.data.datasets[element.datasetIndex].data[element.index];
+    selectedEventIndex = point.oi; renderEventList(matchingObservationIndices('itic')); openEventWaveform(point.oi);
+  };
+  const end = options.scales.x.max;
+  const upper = [{x:0.02,y:120},{x:0.5,y:120},{x:0.5,y:110},{x:end,y:110}];
+  const lower = [{x:0.02,y:70},{x:0.5,y:70},{x:0.5,y:80},{x:10,y:80},{x:10,y:90},{x:end,y:90}];
+  const datasets = [
+    {label:'Upper limit',data:upper,borderColor:'#ef4444',pointRadius:0,borderWidth:2},
+    {label:'Lower limit',data:lower,borderColor:'#ef4444',pointRadius:0,borderWidth:2}
+  ];
+  for (const status of ['Inside envelope','Outside envelope','Not assessed']) {
+    const data = points.filter(p=>p.status === status); if (!data.length) continue;
+    datasets.push({type:'scatter',label:status,data,showLine:false,pointRadius:6,pointStyle:status === 'Outside envelope' ? 'crossRot' : 'circle',borderColor:status === 'Outside envelope' ? '#f87171' : status === 'Inside envelope' ? '#34d399' : '#94a3b8',backgroundColor:status === 'Inside envelope' ? '#34d399' : '#94a3b8'});
+  }
+  const chart = new Chart(card.querySelector('canvas'), {type:'line',data:{datasets},options});
+  reset.addEventListener('click', () => chart.resetZoom()); activeCharts.push(chart);
 }
 
 function createChartCard(container, title, unit) {
