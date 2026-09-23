@@ -35,8 +35,8 @@ test('viewer loads the shared library, prepares every observation, and exports m
   const charts = [];
   let downloadedBlob, downloadName;
   function node() {
-    return { style: {}, classList: { add() {}, remove() {} }, value: '0',
-      innerHTML: '', setAttribute() {}, appendChild() {}, addEventListener() {}, querySelector: node,
+    return { style: {}, classList: { add() {}, remove() {} }, value: '0', children: [],
+      innerHTML: '', setAttribute() {}, appendChild(child) { this.children.push(child); }, addEventListener() {}, querySelector: node, remove() {},
       click() { if (this.download) downloadName = this.download; } };
   }
   const elements = new Map();
@@ -59,6 +59,7 @@ test('viewer loads the shared library, prepares every observation, and exports m
         assert.ok(dataset.data.length);
         assert.ok(dataset.data.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)));
       }
+      this.config = config;
       charts.push(this);
     }
     destroy() { this.destroyed = true; }
@@ -69,16 +70,22 @@ test('viewer loads the shared library, prepares every observation, and exports m
   assert.equal(document.getElementById('controls').style.display, 'flex');
   assert.match(document.getElementById('meta').textContent, /29 observations/);
   assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(LOGICAL)', context)), expected);
-  for (let i = 0; i < actual.observations.length; i++) {
-    document.getElementById('obsSelect').value = String(i);
-    vm.runInContext('renderCharts()', context);
-  }
-  document.getElementById('obsSelect').value = 'all';
-  for (const type of ['trend', 'osc', 'harmonics', 'itic']) {
+  for (const type of ['trend', 'osc', 'harmonics', 'level-time', 'itic']) {
     document.getElementById('chartType').value = type;
-    vm.runInContext('renderCharts()', context);
+    const priorChartCount = charts.length;
+    vm.runInContext('updateAnalysisView()', context);
+    if (type === 'itic') {
+      const eventCharts = charts.slice(priorChartCount);
+      assert.equal(eventCharts.length, 1, 'ITIC should render one voltage-duration diagram');
+      assert.deepStrictEqual(Array.from(eventCharts[0].config.data.datasets, dataset => dataset.label), ['Upper limit', 'Lower limit']);
+    }
+    if (type === 'level-time') {
+      const levelTimeCharts = charts.slice(priorChartCount);
+      assert.ok(levelTimeCharts.some(chart => chart.config.data.datasets.some(dataset => dataset.label.startsWith('F ·'))),
+        'Level Time Diagram should plot frequency data');
+    }
   }
-  assert.match(document.getElementById('charts').textContent, /unavailable/);
+  assert.match(document.getElementById('eventSummary').textContent, /events/);
   const routing = vm.runInContext(`(() => {
     const item = { channel: { quantityTypeName: 'WaveForm', name: 'Voltage', series: [] },
       series: { values: [1, NaN, 3] } };

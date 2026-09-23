@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PQDIF TRMS Viewer</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.2.0/dist/chartjs-plugin-zoom.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 <script src="./lib/pqdif.js"></script>
 <style>
@@ -17,9 +18,16 @@
   .controls label { font-size: 0.85rem; color: #94a3b8; }
   .controls select, .controls input[type=file], .controls button { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; }
   .controls input[type=file] { padding: 4px; }
+  .timezone-control { display: grid; gap: 4px; min-width: 150px; color: #cbd5e1; }
+  .timezone-label { color: #94a3b8; font-size: .8rem; }
+  .range-message { flex-basis: 100%; color: #94a3b8; font-size: .8rem; }
+  .controls input[type=datetime-local] { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; padding: 6px 8px; border-radius: 6px; font-size: .85rem; color-scheme: dark; }
   .charts { padding: 20px 30px; display: grid; gap: 24px; }
   .chart-card { background: #1e293b; border-radius: 10px; border: 1px solid #334155; padding: 20px; }
   .chart-card h2 { font-size: 1rem; font-weight: 500; margin-bottom: 12px; color: #cbd5e1; }
+  .chart-tools { display: flex; justify-content: flex-end; gap: 8px; margin: -4px 0 10px; }
+  .chart-tools button { background: #0f172a; color: #cbd5e1; border: 1px solid #475569; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+  .chart-tools button:hover { border-color: #60a5fa; color: #fff; }
   .chart-container { position: relative; height: 300px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; }
   .stat { background: #0f172a; border-radius: 8px; padding: 12px 16px; border: 1px solid #334155; }
@@ -74,24 +82,36 @@
 <body>
 
 <div class="header">
-  <h1>PQDIF TRMS Viewer</h1>
+  <h1>PQDIF File Analysis</h1>
   <div class="meta" id="meta">Select a .pqd file to begin</div>
 </div>
 
 <div class="controls" id="controls" style="display:none">
   <div>
-    <label for="chartType">Chart type</label><br>
-    <select id="chartType" onchange="updateObservationOptions()">
+    <label for="chartType">Analysis Type</label><br>
+    <select id="chartType" onchange="updateAnalysisView()">
       <option value="trend">Trend</option>
+      <option value="level-time">Level Time Diagram</option>
       <option value="osc">Oscilloscope (OSC)</option>
       <option value="harmonics">Harmonics</option>
-      <option value="itic">Magnitude–Duration / ITIC</option>
+      <option value="itic">ITIC / Events</option>
     </select>
   </div>
   <div>
-    <label for="obsSelect">Observation</label><br>
-    <select id="obsSelect" onchange="renderCharts()"></select>
+    <label for="rangeStart">Start (Absolute Date)</label><br>
+    <input type="datetime-local" id="rangeStart" step="1" onchange="updateAnalysisView()">
   </div>
+  <div>
+    <label for="rangeEnd">End (Absolute Date)</label><br>
+    <input type="datetime-local" id="rangeEnd" step="1" onchange="updateAnalysisView()">
+  </div>
+  <div class="timezone-control">
+    <span class="timezone-label">Timezone</span>
+    <strong id="timezoneName"></strong>
+  </div>
+  <button type="button" id="resetRange" onclick="resetDataRange()">Reset to file range</button>
+  <span id="rangeMessage" class="range-message" aria-live="polite"></span>
+  <div hidden><select id="obsSelect"></select></div>
   <button type="button" onclick="downloadJson()">Download JSON</button>
   <button type="button" onclick="document.getElementById('fileInput').click()">Open another file</button>
 </div>
@@ -102,18 +122,25 @@
   <input type="file" accept=".pqd" id="fileInput" style="display:none">
 </div>
 
+<section id="eventPanel" class="series-panel" style="display:none" aria-labelledby="eventsHeading">
+  <h2 id="eventsHeading">Events</h2>
+  <p id="eventSummary" aria-live="polite"></p>
+  <div class="series-scroll" tabindex="0" role="region" aria-label="PQDIF events">
+    <table><thead><tr><th>View</th><th>Time</th><th>Type</th><th>Event</th><th>Trigger</th><th>Channels</th></tr></thead><tbody id="eventRows"></tbody></table>
+  </div>
+</section>
 <section id="seriesPanel" class="series-panel" style="display:none" aria-labelledby="seriesHeading">
   <h2 id="seriesHeading">Relevant data series</h2>
   <p id="seriesSummary" aria-live="polite"></p>
   <div class="series-scroll" tabindex="0" role="region" aria-label="Matching series table">
-    <table><thead><tr><th>Select</th><th>ID</th><th>Observation</th><th>Channel</th><th>Phase</th><th>Quantity type</th><th>Value type</th><th>Unit</th><th>Samples</th></tr></thead><tbody id="seriesRows"></tbody></table>
+    <table><thead><tr><th>ID</th><th>Observation</th><th>Channel</th><th>Phase</th><th>Quantity type</th><th>Value type</th><th>Unit</th><th>Samples</th></tr></thead><tbody id="seriesRows"></tbody></table>
   </div>
 </section>
 <div class="charts" id="charts" aria-live="polite"></div>
 
 <details class="mapping" open>
   <summary>PQDIF chart data mapping</summary>
-  <p>How an imported <code>.pqd</code> file becomes chart data, based on the supplied mapping document. This reference describes its File Analysis architecture; this page’s current viewer uses the JavaScript library and Chart.js. Live Modbus register data follows a separate path.</p>
+  <p>How an imported <code>.pqd</code> file becomes chart data, based on the supplied mapping document. This page parses the selected PQDIF file directly. Choose an analysis type without selecting a device. ITIC lists the disturbance events recorded in the file and lets you inspect each event’s measured series; a standards-based ITIC compliance curve needs duration, magnitude, and compliance limits that are not present in every PQDIF file. Start/end controls filter by file timestamps and clip samples when a matching Time series is present. Live Modbus register data follows a separate path.</p>
 
   <section aria-labelledby="flow-heading">
     <h3 id="flow-heading">1. Decode and normalize</h3>
@@ -157,7 +184,7 @@
 
   <section aria-labelledby="time-heading">
     <h3 id="time-heading">4. Trend and OSC time-axis fallback</h3>
-    <p>Use the first reliable source below. If it is unavailable, try the next step.</p>
+    <p>Use the first reliable source below. If it is unavailable, try the next step. The date filter uses absolute sample times reconstructed as observation start plus the channel Time value.</p>
     <ol class="time-flow">
       <li class="flow-node"><strong>Channel Time series</strong><small>Same channel and sample count; <code>valueType === "Time"</code> or <code>unit === "timestamp"</code>.</small></li>
       <li class="flow-node"><strong>Filename + cadence</strong><small>Q200 filename timestamp <code>_YYYYMMDDThhmmss…</code> plus cadence from metadata, such as <code>Freq10s</code> or <code>10min</code>.</small></li>
@@ -257,6 +284,8 @@ function downloadJson() {
 
 let seriesCatalog = [];
 let selectedSeriesId = null;
+let selectedEventIndex = null;
+let fileDateRange = null;
 
 function isTimeSeries(series) {
   return series.valueType === 'c690e862-f755-11cf-9d89-0080c72e70a3' ||
@@ -269,107 +298,245 @@ function buildSeriesCatalog(data) {
     channel.series.forEach((series, si) => {
       if (isTimeSeries(series) || series.normalizationApplied === false || series.values.length < 2) return;
       if (!series.values.some(Number.isFinite)) return;
-      result.push({ id: `o${oi}-c${ci}-s${si}`, oi, ci, si, observation, channel, series,
-        label: series.valueTypeName || Pqdif.seriesValueTypeNames[series.valueType] || `Series ${si + 1}` });
+      const item = { id: `o${oi}-c${ci}-s${si}`, oi, ci, si, observation, channel, series,
+        label: series.valueTypeName || Pqdif.seriesValueTypeNames[series.valueType] || `Series ${si + 1}` };
+      item.timeBounds = getSeriesTimeBounds(item);
+      result.push(item);
     });
   }));
   return result;
 }
 
+function observationStartMs(observation) {
+  const value = observation.startTime || observation.createTime;
+  const time = value ? Date.parse(value) : NaN;
+  return Number.isFinite(time) ? time : null;
+}
+
+function itemTimeAxis(item) {
+  return item.channel.series.find(s => isTimeSeries(s) &&
+    s.values.length === item.series.values.length);
+}
+
+function absoluteSampleTime(item, index, timeSeries = itemTimeAxis(item)) {
+  if (!timeSeries) return null;
+  const value = timeSeries.values[index];
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const relativeSeconds = Number(value);
+  const start = observationStartMs(item.observation);
+  return start !== null && Number.isFinite(relativeSeconds)
+    ? start + relativeSeconds * 1000 : null;
+}
+
+function getSeriesTimeBounds(item) {
+  const timeSeries = itemTimeAxis(item);
+  if (timeSeries && timeSeries.values.every(v => Number.isFinite(Number(v)))) {
+    const start = absoluteSampleTime(item, 0, timeSeries);
+    const end = absoluteSampleTime(item, timeSeries.values.length - 1, timeSeries);
+    if (start !== null && end !== null) return { start: Math.min(start, end), end: Math.max(start, end), hasSampleTimes: true };
+  }
+  const observationTime = observationStartMs(item.observation);
+  return observationTime === null ? null : { start: observationTime, end: observationTime, hasSampleTimes: false };
+}
+
+function currentDataRange() {
+  const startValue = document.getElementById('rangeStart').value;
+  const endValue = document.getElementById('rangeEnd').value;
+  return {
+    start: startValue ? new Date(startValue).getTime() : null,
+    end: endValue ? new Date(endValue).getTime() : null,
+    invalid: Boolean(startValue && endValue && new Date(startValue).getTime() > new Date(endValue).getTime())
+  };
+}
+
+function overlapsDataRange(bounds, range = currentDataRange()) {
+  if (range.invalid || !bounds) return false;
+  return (range.start === null || bounds.end >= range.start) &&
+    (range.end === null || bounds.start <= range.end);
+}
+
+function localDateInputValue(milliseconds) {
+  const date = new Date(milliseconds);
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function initializeDataRange() {
+  const bounds = seriesCatalog.map(item => item.timeBounds).filter(Boolean);
+  if (!bounds.length) {
+    fileDateRange = null;
+    document.getElementById('rangeStart').value = '';
+    document.getElementById('rangeEnd').value = '';
+    return;
+  }
+  const first = Math.floor(Math.min(...bounds.map(b => b.start)) / 1000) * 1000;
+  const last = Math.ceil(Math.max(...bounds.map(b => b.end)) / 1000) * 1000;
+  fileDateRange = { start: first, end: last };
+  document.getElementById('rangeStart').value = localDateInputValue(first);
+  document.getElementById('rangeEnd').value = localDateInputValue(last);
+}
+
+function resetDataRange() {
+  if (!fileDateRange) return;
+  document.getElementById('rangeStart').value = localDateInputValue(fileDateRange.start);
+  document.getElementById('rangeEnd').value = localDateInputValue(fileDateRange.end);
+  updateAnalysisView();
+}
+
 function matchesChart(item, type) {
+  if (type === 'itic') return true;
   const quantity = (item.channel.quantityTypeName || '').toLowerCase();
+  if (type === 'level-time') return /frequency|freq|\bf\b/i.test(`${item.channel.name} ${item.channel.definition?.quantityMeasured || ''} ${item.channel.definition?.quantityName || ''}`);
   if (type === 'osc') return quantity === 'waveform';
   if (type === 'harmonics') return quantity === 'response' || /harmonic|thd|interharm/i.test(`${item.channel.name} ${item.channel.definition?.quantityName || ''}`);
   return type === 'trend';
 }
 
-function hasMagnitudeDuration(obs, ch) {
-  return obs.duration != null && ch.characterizationMagnitude != null &&
-    Number.isFinite(Number(obs.duration)) && Number(obs.duration) > 0 &&
-    Number.isFinite(Number(ch.characterizationMagnitude));
+const NO_DISTURBANCE_ID = '67f6af8f-f753-11cf-9d89-0080c72e70a3';
+
+function isEventObservation(obs) {
+  return obs.triggerMethod === 'Channel' ||
+    (obs.disturbanceCategoryID && obs.disturbanceCategoryID !== NO_DISTURBANCE_ID);
+}
+
+function eventType(obs) {
+  const description = `${obs.disturbanceCategoryName || ''} ${obs.name || ''}`.toLowerCase();
+  if (description.includes('transient')) return 'Transient';
+  if (description.includes('swell')) return 'Swell';
+  if (description.includes('sag')) return 'Sag';
+  return 'Event';
 }
 
 function matchingObservationIndices(type) {
-  if (type === 'itic') return LOGICAL.observations.flatMap((obs, i) =>
-    obs.channels.some(ch => hasMagnitudeDuration(obs, ch)) ? [i] : []);
-  return [...new Set(seriesCatalog.filter(item => matchesChart(item, type)).map(item => item.oi))];
+  const range = currentDataRange();
+  if (type === 'itic') return LOGICAL.observations.flatMap((obs, i) => {
+    const time = observationStartMs(obs);
+    return isEventObservation(obs) &&
+      overlapsDataRange(time === null ? null : { start: time, end: time }, range) ? [i] : [];
+  });
+  return [...new Set(seriesCatalog.filter(item => matchesChart(item, type) &&
+    overlapsDataRange(item.timeBounds, range)).map(item => item.oi))];
 }
 
-function updateObservationOptions() {
+function updateAnalysisView() {
   if (!LOGICAL) return;
   const type = document.getElementById('chartType').value || 'trend';
   const indices = matchingObservationIndices(type);
-  const sel = document.getElementById('obsSelect');
-  const previous = sel.value;
-  sel.innerHTML = '';
-  const all = document.createElement('option');
-  all.value = 'all';
-  all.textContent = indices.length ? `All matching observations (${indices.length})` : 'No matching observations';
-  sel.appendChild(all);
-  indices.forEach(i => {
-    const opt = document.createElement('option');
-    opt.value = String(i);
-    opt.textContent = LOGICAL.observations[i].name || `Observation ${i + 1}`;
-    sel.appendChild(opt);
-  });
-  sel.disabled = indices.length === 0;
-  sel.value = indices.some(i => String(i) === previous) ? previous : 'all';
+  const range = currentDataRange();
+  document.getElementById('timezoneName').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time';
+  document.getElementById('rangeMessage').textContent = range.invalid
+    ? 'Start time must be earlier than or equal to end time.'
+    : `${indices.length} matching ${type === 'itic' ? 'events' : 'observations'} in the selected file time range.`;
+  const eventPanel = document.getElementById('eventPanel');
+  eventPanel.style.display = type === 'itic' ? 'block' : 'none';
+  if (type === 'itic') {
+    if (!indices.includes(selectedEventIndex)) selectedEventIndex = indices[0] ?? null;
+    renderEventList(indices);
+  }
   renderCharts();
+}
+
+function renderEventList(indices) {
+  const tbody = document.getElementById('eventRows');
+  tbody.innerHTML = '';
+  const counts = { Sag: 0, Swell: 0, Transient: 0, Event: 0 };
+  indices.forEach(index => { counts[eventType(LOGICAL.observations[index])]++; });
+  const summary = indices.length
+    ? `${indices.length} events · ${counts.Sag} sags · ${counts.Swell} swells · ${counts.Transient} transients. Select an event to inspect its stored waveform and measurement series. This file does not include ITIC duration/magnitude metadata or compliance limits.`
+    : 'No PQDIF events fall inside this time range.';
+  document.getElementById('eventSummary').textContent = summary;
+  indices.forEach(index => {
+    const obs = LOGICAL.observations[index];
+    const row = document.createElement('tr');
+    const selectCell = document.createElement('td');
+    const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'pqdif-event';
+    radio.checked = selectedEventIndex === index;
+    radio.setAttribute('aria-label', `View ${eventType(obs)} event ${obs.name}`);
+    radio.addEventListener('change', () => { selectedEventIndex = index; selectedSeriesId = null; renderCharts(); renderEventList(indices); });
+    selectCell.appendChild(radio); row.appendChild(selectCell);
+    const start = observationStartMs(obs);
+    const fields = [start === null ? 'Time not recorded' : new Date(start).toLocaleString(),
+      eventType(obs), obs.name, obs.triggerMethod, obs.channels.length];
+    fields.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
+    row.addEventListener('click', event => {
+      if (event.target === radio) return;
+      selectedEventIndex = index; selectedSeriesId = null; renderCharts(); renderEventList(indices);
+    });
+    tbody.appendChild(row);
+  });
 }
 
 function populateObservations() {
   seriesCatalog = buildSeriesCatalog(LOGICAL);
   selectedSeriesId = null;
-  document.getElementById('obsSelect').value = 'all';
+  selectedEventIndex = null;
+  initializeDataRange();
   document.getElementById('chartType').value = 'trend';
   document.getElementById('seriesPanel').style.display = 'block';
-  updateObservationOptions();
+  updateAnalysisView();
 }
 
 function renderCharts() {
   activeCharts.forEach(chart => chart.destroy()); activeCharts = [];
   if (!LOGICAL) return;
   const type = document.getElementById('chartType').value || 'trend';
-  const observationFilter = document.getElementById('obsSelect').value;
+  const eventIndex = selectedEventIndex;
+  const range = currentDataRange();
   const container = document.getElementById('charts'); container.innerHTML = '';
   const table = document.getElementById('seriesRows'); table.innerHTML = '';
   const message = document.getElementById('seriesSummary');
-  if (type === 'itic') {
-    message.textContent = 'Magnitude–Duration uses event metadata, not sample series.';
-    renderMagnitudeDuration(container, observationFilter);
+  if (range.invalid) { container.textContent = 'Start time must be earlier than or equal to end time.'; message.textContent = ''; return; }
+  if (type === 'itic' && eventIndex === null) {
+    document.getElementById('seriesPanel').style.display = 'none';
+    message.textContent = 'Select an event above to see its measured data.';
+    container.textContent = 'No event is selected.';
     return;
   }
+  document.getElementById('seriesPanel').style.display = 'block';
   const items = seriesCatalog.filter(item => matchesChart(item, type) &&
-    (observationFilter === 'all' || item.oi === Number(observationFilter)));
-  message.textContent = `${items.length} matching series. Select a row to plot its data.`;
+    (type !== 'itic' || item.oi === eventIndex) &&
+    overlapsDataRange(item.timeBounds, range));
+  document.getElementById('seriesHeading').textContent = type === 'itic'
+    ? `Event data · ${LOGICAL.observations[eventIndex]?.name || ''}` : 'Relevant data series';
+  message.textContent = `${items.length} matching series. Voltage (U) and current (I) values are grouped into separate diagrams.`;
+  if (type === 'itic') {
+    document.getElementById('seriesHeading').textContent = 'All event measurements';
+    const eventItems = seriesCatalog.filter(item => isEventObservation(item.observation) &&
+      overlapsDataRange(item.timeBounds, range));
+    renderITICDiagram(container, eventItems);
+    return;
+  }
   if (!items.length) {
     selectedSeriesId = null;
     container.textContent = 'No matching numeric series in this selection. Try another chart type or observation.';
     return;
   }
-  if (!items.some(item => item.id === selectedSeriesId)) selectedSeriesId = items[0].id;
   items.forEach(item => {
     const row = document.createElement('tr');
-    const choice = document.createElement('td');
-    const radio = document.createElement('input'); radio.type = 'radio'; radio.name = 'series';
-    radio.checked = item.id === selectedSeriesId;
-    radio.setAttribute('aria-label', `Plot ${item.channel.name}, ${item.label}, ${item.id}`);
-    radio.addEventListener('change', () => { selectedSeriesId = item.id; renderCharts(); });
-    choice.appendChild(radio); row.appendChild(choice);
     const values = [item.id, item.observation.name, item.channel.name, item.channel.phase,
-      item.channel.quantityTypeName, item.label, item.series.units, item.series.values.length];
+      item.channel.quantityTypeName, item.label, item.series.units, seriesPoints(item, type).finiteCount];
     values.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
     table.appendChild(row);
   });
-  renderSelectedSeries(container, items.find(item => item.id === selectedSeriesId), type);
+  if (type === 'level-time') renderLevelTimeDiagram(container, items);
+  else renderGroupedElectricalSeries(container, items, type);
 }
 
 function seriesPoints(item, type) {
-  const time = type !== 'harmonics' && item.channel.series.find(s => isTimeSeries(s) &&
-    s.values.length === item.series.values.length && s.values.every(Number.isFinite));
-  const axis = time ? `Time (${time.units || 'file units'})` : 'Sample index';
+  const time = itemTimeAxis(item);
+  const range = currentDataRange();
+  const hasAbsoluteTime = time && observationStartMs(item.observation) !== null;
+  const axis = hasAbsoluteTime ? 'Local date and time' : 'Sample index';
   const points = [];
-  item.series.values.forEach((y, index) => { if (Number.isFinite(y)) points.push({ x: time ? time.values[index] : index, y }); });
+  item.series.values.forEach((y, index) => {
+    if (!Number.isFinite(y)) return;
+    const timestamp = hasAbsoluteTime ? absoluteSampleTime(item, index, time) : null;
+    if (timestamp !== null && !overlapsDataRange({ start: timestamp, end: timestamp }, range)) return;
+    points.push({ x: type === 'harmonics' || timestamp === null ? index : timestamp, y });
+  });
   // Preserve original indices and endpoints; only reduce the rendered line.
   const displayed = type !== 'harmonics' && points.length > 1800
     ? Array.from({ length: 1800 }, (_, i) => points[Math.round(i * (points.length - 1) / 1799)]) : points;
@@ -378,17 +545,24 @@ function seriesPoints(item, type) {
 
 function renderSelectedSeries(container, item, type) {
   const { points, axis, finiteCount } = seriesPoints(item, type);
+  if (!points.length) { container.textContent = 'No samples from this series fall inside the selected date range.'; return; }
   const title = `${item.channel.name} — ${item.label}`;
   const card = createChartCard(container, title);
   const note = document.createElement('p'); note.className = 'series-note';
   note.textContent = `${finiteCount} finite samples; ${points.length} displayed. ${type === 'harmonics'
     ? 'X uses stored array order; harmonic order is not inferred.'
-    : axis === 'Sample index' ? 'No matching numeric Time series; X uses the original sample index.' : 'X uses the Time series from the same channel.'}`;
+    : axis === 'Sample index' ? 'No absolute Time series; X uses the original sample index.' : 'X shows the file timestamp reconstructed from the observation start and channel Time values.'}`;
   card.appendChild(note);
   const options = chartOptions(item.series.units);
   options.scales.x.title.text = type === 'harmonics' ? 'Stored array index' : axis;
-  delete options.scales.x.ticks.callback;
-  options.plugins.tooltip.callbacks.title = items => `${options.scales.x.title.text}: ${items[0]?.parsed?.x ?? ''}`;
+  if (axis === 'Local date and time' && type !== 'harmonics') {
+    options.scales.x.ticks.callback = value => new Date(value).toLocaleString();
+    options.plugins.tooltip.callbacks.title = items => new Date(items[0]?.parsed?.x ?? 0).toLocaleString();
+    options.scales.x.title.text = 'File date and time';
+  } else {
+    delete options.scales.x.ticks.callback;
+    options.plugins.tooltip.callbacks.title = items => `${options.scales.x.title.text}: ${items[0]?.parsed?.x ?? ''}`;
+  }
   activeCharts.push(new Chart(card.querySelector('canvas'), {
     type: type === 'harmonics' ? 'bar' : 'line',
     data: { datasets: [{ label: title, data: points, borderColor: '#60a5fa', backgroundColor: '#60a5fa80',
@@ -396,30 +570,144 @@ function renderSelectedSeries(container, item, type) {
   }));
 }
 
-function renderMagnitudeDuration(container, observationFilter) {
-  const datasets = [];
-  LOGICAL.observations.forEach((obs, oi) => {
-    if (observationFilter !== 'all' && oi !== Number(observationFilter)) return;
-    obs.channels.forEach(ch => {
-      if (!hasMagnitudeDuration(obs, ch)) return;
-      const x = Number(obs.duration), y = Number(ch.characterizationMagnitude);
-      if (!Number.isFinite(x) || x <= 0 || !Number.isFinite(y)) return;
-      datasets.push({ label: `${obs.name} — ${ch.name}`, data: [{ x, y }], backgroundColor: '#fbbf24', pointRadius: 5 });
+function electricalQuantity(item) {
+  const measured = String(item.channel.definition?.quantityMeasured || '').toLowerCase();
+  if (measured.includes('voltage')) return 'U';
+  if (measured.includes('current')) return 'I';
+  const name = `${item.channel.name || ''} ${item.channel.definition?.quantityName || ''}`.trim();
+  const match = name.match(/(?:^|[^A-Za-z])(U|I)(?=\d|[^A-Za-z]|$)/i);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function electricalSeriesKind(item) {
+  const valueType = String(item.series.valueTypeName || item.label || '').toLowerCase();
+  const source = `${item.observation.name || ''} ${item.channel.name || ''} ${item.channel.quantityTypeName || ''} ${valueType}`.toLowerCase();
+  if (source.includes('waveform') || source.includes('oscill')) return 'WaveForm';
+  if (source.includes('rms') || source.includes('steady state')) return 'RMS';
+  return null;
+}
+
+function renderGroupedElectricalSeries(container, items, type) {
+  const initialChartCount = activeCharts.length;
+  const groups = [
+    { key: 'U', kind: 'RMS', title: 'Voltage (U) · RMS', unit: 'V' },
+    { key: 'U', kind: 'WaveForm', title: 'Voltage (U) · WaveForm', unit: 'V' },
+    { key: 'I', kind: 'RMS', title: 'Current (I) · RMS', unit: 'A' },
+    { key: 'I', kind: 'WaveForm', title: 'Current (I) · WaveForm', unit: 'A' },
+  ];
+  // In ITIC/event views, still show every U/I event measurement. If the PQDIF
+  // event metadata doesn't identify RMS vs waveform, group those channels as
+  // event measurements instead of silently hiding all their plots.
+  const eventHasTypedSeries = items.some(item => electricalSeriesKind(item));
+  if (type === 'itic' && !eventHasTypedSeries) {
+    groups.push(
+      { key: 'U', kind: null, title: 'Voltage (U) · Event measurements', unit: 'V' },
+      { key: 'I', kind: null, title: 'Current (I) · Event measurements', unit: 'A' }
+    );
+  }
+  groups.forEach(group => {
+    const series = items.filter(item => electricalQuantity(item) === group.key &&
+      (group.kind === null ? !electricalSeriesKind(item) : electricalSeriesKind(item) === group.kind));
+    if (!series.length) return;
+    const card = createChartCard(container, `${group.title} · ${series.length} series`);
+    const zoomButton = document.createElement('button');
+    zoomButton.type = 'button'; zoomButton.textContent = 'Reset zoom';
+    zoomButton.setAttribute('aria-label', `Reset zoom on ${group.title} diagram`);
+    const tools = document.createElement('div'); tools.className = 'chart-tools';
+    tools.appendChild(zoomButton); card.appendChild(tools);
+    const datasets = [];
+    let axis = 'Local date and time';
+    let totalPoints = 0;
+    series.forEach((item, index) => {
+      const result = seriesPoints(item, type);
+      if (!result.points.length) return;
+      if (result.axis === 'Sample index') axis = 'Sample index';
+      totalPoints += result.finiteCount;
+      const phase = phaseForChannelName(item.channel.name);
+      const hue = group.key === 'U' ? [ '#60a5fa', '#a78bfa', '#38bdf8', '#818cf8' ] : [ '#f87171', '#fb923c', '#f472b6', '#fbbf24' ];
+      const label = `${item.channel.name} · ${item.label}${item.series.units ? ` (${item.series.units})` : ''}`;
+      datasets.push({ label, data: result.points, borderColor: phase ? PHASE_COLORS[phase]?.line : hue[index % hue.length],
+        backgroundColor: phase ? PHASE_COLORS[phase]?.bg : `${hue[index % hue.length]}33`, borderWidth: 1.3,
+        pointRadius: 0, tension: 0, spanGaps: false });
     });
+    if (!datasets.length) { card.remove(); return; }
+    const note = document.createElement('p'); note.className = 'series-note';
+    note.textContent = `${series.length} matching ${group.key} ${group.kind} channels · ${totalPoints.toLocaleString()} finite samples. Each channel is a separate line; dates outside the selected range are filtered.`;
+    card.appendChild(note);
+    const options = chartOptions(group.unit);
+    options.scales.x.title.text = type === 'harmonics' ? 'Stored array index' : axis;
+    if (axis === 'Local date and time' && type !== 'harmonics') {
+      options.scales.x.ticks.callback = value => new Date(value).toLocaleString();
+      options.plugins.tooltip.callbacks.title = pointItems => new Date(pointItems[0]?.parsed?.x ?? 0).toLocaleString();
+      options.scales.x.title.text = 'File date and time';
+    } else {
+      delete options.scales.x.ticks.callback;
+      options.plugins.tooltip.callbacks.title = pointItems => `${options.scales.x.title.text}: ${pointItems[0]?.parsed?.x ?? ''}`;
+    }
+    const chart = new Chart(card.querySelector('canvas'), {
+      type: type === 'harmonics' ? 'bar' : 'line', data: { datasets }, options
+    });
+    zoomButton.addEventListener('click', () => chart.resetZoom());
+    activeCharts.push(chart);
   });
-  if (!datasets.length) {
-    container.textContent = 'Magnitude–Duration is unavailable: this export has no usable observation duration and channel characterization magnitude. These values cannot be inferred from the sample series.';
+  if (activeCharts.length === initialChartCount) container.textContent = 'No voltage/current RMS or WaveForm series are available for this selection.';
+}
+
+function renderLevelTimeDiagram(container, items) {
+  const series = items.filter(item => /frequency|freq|\bf\b/i.test(
+    `${item.channel.name} ${item.channel.definition?.quantityMeasured || ''} ${item.channel.definition?.quantityName || ''}`));
+  if (!series.length) {
+    container.textContent = 'No frequency series are available in the selected time range.';
     return;
   }
-  const card = createChartCard(container, 'Magnitude–Duration');
-  const options = chartOptions('Characterization magnitude (source units)');
-  options.scales.x.title.text = 'Duration (source units)';
-  delete options.scales.x.ticks.callback;
-  options.plugins.tooltip.callbacks.title = items => `Duration: ${items[0]?.parsed?.x ?? ''}`;
+  const card = createChartCard(container, 'Frequency · Level Time Diagram');
+  const datasets = [];
+  let finiteCount = 0;
+  const colors = { Average: '#d6c6c3', Minimum: '#f87171', Maximum: '#60a5fa', Values: '#d6c6c3' };
+  series.forEach(item => {
+    const result = seriesPoints(item, 'trend');
+    if (!result.points.length) return;
+    finiteCount += result.finiteCount;
+    datasets.push({ label: `${item.channel.name} · ${item.label}`, data: result.points,
+      borderColor: colors[item.label] || '#c4b5fd', backgroundColor: 'transparent', borderWidth: 1.2,
+      pointRadius: 0, tension: 0, spanGaps: false });
+  });
+  if (!datasets.length) {
+    container.textContent = 'No frequency samples fall inside the selected time range.';
+    return;
+  }
   const note = document.createElement('p'); note.className = 'series-note';
-  note.textContent = 'Source metadata only. No ITIC compliance boundary or nominal-voltage normalization is applied.';
+  note.textContent = `${datasets.length} frequency series · ${finiteCount.toLocaleString()} samples. Each value type is a separate line.`;
   card.appendChild(note);
-  activeCharts.push(new Chart(card.querySelector('canvas'), { type: 'scatter', data: { datasets }, options }));
+  const options = chartOptions('Hz');
+  options.scales.x.title.text = 'File date and time';
+  options.scales.x.ticks.callback = value => new Date(value).toLocaleString();
+  options.plugins.tooltip.callbacks.title = pointItems => new Date(pointItems[0]?.parsed?.x ?? 0).toLocaleString();
+  activeCharts.push(new Chart(card.querySelector('canvas'), { type: 'line', data: { datasets }, options }));
+}
+
+function renderITICDiagram(container, items) {
+  const card = createChartCard(container, 'ITIC · Voltage vs Duration');
+  const tools = document.createElement('div'); tools.className = 'chart-tools';
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset zoom';
+  tools.appendChild(reset); card.appendChild(tools);
+  const note = document.createElement('p'); note.className = 'series-note';
+  note.textContent = `${items.length} disturbance channels are available. This PQDIF export has waveform/RMS samples, but no explicit event duration, nominal voltage, characterization magnitude, or compliance limits; event markers cannot be positioned reliably.`;
+  card.appendChild(note);
+  const options = chartOptions('% of nominal voltage');
+  options.scales.x.type = 'logarithmic'; options.scales.x.min = 0.001; options.scales.x.max = 100;
+  options.scales.x.title.text = 'Duration';
+  options.scales.x.ticks.callback = value => value < 1 ? `${value * 1000} ms` : `${value} s`;
+  options.scales.y.min = 0; options.scales.y.max = 240;
+  options.scales.y.title.text = 'Voltage (% of nominal)';
+  const upper = [{ x: 0.001, y: 200 }, { x: 0.008, y: 140 }, { x: 0.1, y: 140 }, { x: 0.5, y: 120 }, { x: 2, y: 110 }, { x: 10, y: 110 }, { x: 100, y: 110 }];
+  const lower = [{ x: 0.001, y: 0 }, { x: 0.008, y: 70 }, { x: 0.5, y: 70 }, { x: 2, y: 80 }, { x: 10, y: 80 }, { x: 100, y: 90 }];
+  const chart = new Chart(card.querySelector('canvas'), { type: 'line', data: { datasets: [
+    { label: 'Upper limit', data: upper, borderColor: '#ef4444', backgroundColor: 'transparent', stepped: 'after', pointRadius: 0, borderWidth: 2 },
+    { label: 'Lower limit', data: lower, borderColor: '#ef4444', backgroundColor: 'transparent', stepped: 'after', pointRadius: 0, borderWidth: 2 }
+  ] }, options });
+  reset.addEventListener('click', () => chart.resetZoom());
+  activeCharts.push(chart);
 }
 
 function createChartCard(container, title, unit) {
@@ -436,6 +724,16 @@ function chartOptions(unit) {
     responsive: true, maintainAspectRatio: false,
     interaction: { mode: 'index', intersect: false },
     plugins: {
+      zoom: {
+        limits: { x: { min: 'original', max: 'original' }, y: { min: 'original', max: 'original' } },
+        pan: { enabled: true, mode: 'xy', modifierKey: 'shift' },
+        zoom: {
+          wheel: { enabled: true },
+          pinch: { enabled: true },
+          drag: { enabled: true, backgroundColor: 'rgba(96,165,250,0.18)', borderColor: '#60a5fa', borderWidth: 1 },
+          mode: 'xy'
+        }
+      },
       legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
       tooltip: {
         backgroundColor: '#1e293b', borderColor: '#475569', borderWidth: 1,
