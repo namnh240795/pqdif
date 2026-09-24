@@ -88,6 +88,7 @@
   .controls select:focus, .controls input:focus { outline: 2px solid #e69a59; outline-offset: 1px; }
   .controls button, .chart-card button { background: #ff8300; color: #fff; border: 0; border-radius: 0; padding: 7px 12px; cursor: pointer; }
   .controls button:hover, .chart-card button:hover { background: #e77400; }
+  .controls .series-link { color: #ffad58; font-size: .85rem; align-self: center; }
   .charts { gap: 16px; padding: 18px 26px; }
   .chart-card { background: #282828; border: 1px solid #3d3d3d; border-radius: 0; padding: 18px 20px; }
   .chart-card h2 { text-align: center; font-weight: 600; font-size: 14px; color: #e3e3e3; }
@@ -101,6 +102,11 @@
     .chart-card { padding: 14px 10px; }
     .chart-container, .voltage-level-chart .chart-container { height: 340px; }
   }
+.fault-board { display:grid; grid-template-columns:260px minmax(0,1fr); background:#262626; padding:16px; gap:12px; }
+.fault-panel { position:relative; height:190px; border-bottom:1px solid #484848; }
+.fault-legend h4 { margin:12px 0 6px; font-size:12px; }
+.fault-legend button { display:block; background:transparent; border:0; text-align:left; font-size:12px; padding:4px; max-width:250px; overflow-wrap:anywhere; }
+@media(max-width:760px) { .fault-board { grid-template-columns:1fr; } .fault-legend { max-height:200px; overflow:auto; } }
 </style>
 </head>
 <body>
@@ -122,7 +128,17 @@
       <option value="histogram">Histogram</option>
       <option value="scatter">Scatter Plot</option>
       <option value="itic">ITIC / Events</option>
+      <option value="fault-record">Fault Record</option>
+      <option value="trms">TRMS · RMS fault recording</option>
     </select>
+  </div>
+  <div id="faultControls" style="display:none;flex-basis:100%">
+    <label for="faultRecord">Fault recording</label>
+    <select id="faultRecord" onchange="selectFaultRecord()"></select>
+    <label for="faultMode">Recording type</label>
+    <select id="faultMode" onchange="updateFaultChannels(); renderCharts()"><option value="WaveForm">OSC / Waveform</option><option value="RMS">RMS</option><option value="combined">OSC + RMS · stacked</option></select>
+    <button type="button" onclick="selectFaultRecord()">Fit recording range</button>
+    <fieldset><legend>Data Class &amp; Types</legend><div id="faultChannels"></div></fieldset>
   </div>
   <div id="analysisControls" style="display:none;flex-basis:100%">
     <label for="analysisChannels">Channels to compare (Ctrl / Cmd to select multiple)</label><br>
@@ -173,21 +189,24 @@
   </div>
   <div>
     <label for="rangeStart">Start (Absolute Date)</label><br>
-    <input type="datetime-local" id="rangeStart" step="1" onchange="updateAnalysisView()">
+    <input type="datetime-local" id="rangeStart" step="1" onchange="updateAnalysisView('start')">
   </div>
   <div>
     <label for="rangeEnd">End (Absolute Date)</label><br>
-    <input type="datetime-local" id="rangeEnd" step="1" onchange="updateAnalysisView()">
+    <input type="datetime-local" id="rangeEnd" step="1" onchange="updateAnalysisView('end')">
   </div>
   <div class="timezone-control">
     <span class="timezone-label">Timezone</span>
     <strong id="timezoneName"></strong>
   </div>
-  <button type="button" id="resetRange" onclick="resetDataRange()">Reset to file range</button>
+  <div class="range-actions" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    <button type="button" id="resetRange" onclick="resetDataRange()">Reset to file range</button>
+    <button type="button" onclick="downloadJson()">Download JSON</button>
+    <button type="button" onclick="document.getElementById('fileInput').click()">Open another file</button>
+    <a class="series-link" href="./index2.html">List all data series</a>
+  </div>
   <span id="rangeMessage" class="range-message" aria-live="polite"></span>
   <div hidden><select id="obsSelect"></select></div>
-  <button type="button" onclick="downloadJson()">Download JSON</button>
-  <button type="button" onclick="document.getElementById('fileInput').click()">Open another file</button>
 </div>
 
 <div id="dropZone" class="drop-zone">
@@ -206,6 +225,7 @@
     <table><thead><tr><th>View</th><th>Time</th><th>Type</th><th>Event</th><th>Trigger</th><th>Channels</th></tr></thead><tbody id="eventRows"></tbody></table>
   </div>
 </section>
+<div class="charts" id="charts" aria-live="polite"></div>
 <section id="seriesPanel" class="series-panel" style="display:none" aria-labelledby="seriesHeading">
   <h2 id="seriesHeading">Relevant data series</h2>
   <p id="seriesSummary" aria-live="polite"></p>
@@ -213,7 +233,6 @@
     <table><thead><tr><th>ID</th><th>Observation</th><th>Channel</th><th>Phase</th><th>Quantity type</th><th>Value type</th><th>Unit</th><th>Samples</th></tr></thead><tbody id="seriesRows"></tbody></table>
   </div>
 </section>
-<div class="charts" id="charts" aria-live="polite"></div>
 
 <details class="mapping" open>
   <summary>PQDIF chart data mapping</summary>
@@ -364,6 +383,7 @@ let seriesCatalog = [];
 let selectedSeriesId = null;
 let selectedEventIndex = null;
 let fileDateRange = null;
+const MAX_DISPLAY_RANGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function isTimeSeries(series) {
   return series.valueType === 'c690e862-f755-11cf-9d89-0080c72e70a3' ||
@@ -430,6 +450,18 @@ function currentDataRange() {
   };
 }
 
+function limitDisplayRange(changed = 'end') {
+  const range = currentDataRange();
+  if (range.invalid || range.start === null || range.end === null ||
+      range.end - range.start <= MAX_DISPLAY_RANGE_MS) return false;
+  if (changed === 'start') {
+    document.getElementById('rangeEnd').value = localDateInputValue(range.start + MAX_DISPLAY_RANGE_MS);
+  } else {
+    document.getElementById('rangeStart').value = localDateInputValue(range.end - MAX_DISPLAY_RANGE_MS);
+  }
+  return true;
+}
+
 function overlapsDataRange(bounds, range = currentDataRange()) {
   if (range.invalid || !bounds) return false;
   return (range.start === null || bounds.end >= range.start) &&
@@ -453,19 +485,20 @@ function initializeDataRange() {
   const first = Math.floor(Math.min(...bounds.map(b => b.start)) / 1000) * 1000;
   const last = Math.ceil(Math.max(...bounds.map(b => b.end)) / 1000) * 1000;
   fileDateRange = { start: first, end: last };
-  document.getElementById('rangeStart').value = localDateInputValue(first);
+  document.getElementById('rangeStart').value = localDateInputValue(Math.max(first, last - MAX_DISPLAY_RANGE_MS));
   document.getElementById('rangeEnd').value = localDateInputValue(last);
 }
 
 function resetDataRange() {
   if (!fileDateRange) return;
-  document.getElementById('rangeStart').value = localDateInputValue(fileDateRange.start);
+  document.getElementById('rangeStart').value = localDateInputValue(Math.max(fileDateRange.start, fileDateRange.end - MAX_DISPLAY_RANGE_MS));
   document.getElementById('rangeEnd').value = localDateInputValue(fileDateRange.end);
   updateAnalysisView();
 }
 
 function matchesChart(item, type) {
   if (type === 'itic') return true;
+  if (['fault-record','trms'].includes(type)) return isEventObservation(item.observation) && Boolean(electricalSeriesKind(item)) && (type !== 'trms' || electricalSeriesKind(item) === 'RMS');
   const quantity = (item.channel.quantityTypeName || '').toLowerCase();
   if (type === 'level-time') return isLevelTimeSeries(item);
   if (type === 'osc') return quantity === 'waveform';
@@ -500,10 +533,12 @@ function matchingObservationIndices(type) {
     overlapsDataRange(item.timeBounds, range)).map(item => item.oi))];
 }
 
-function updateAnalysisView() {
+function updateAnalysisView(changed = 'end') {
   if (!LOGICAL) return;
   const type = document.getElementById('chartType').value || 'trend';
   document.getElementById('levelMeasurementControl').style.display = type === 'level-time' ? 'block' : 'none';
+  updateFaultControls(type);
+  const wasLimited = limitDisplayRange(changed);
   updateLevelSubset(type);
   updateAnalysisControls(type);
   const indices = matchingObservationIndices(type);
@@ -511,7 +546,7 @@ function updateAnalysisView() {
   document.getElementById('timezoneName').textContent = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local time';
   document.getElementById('rangeMessage').textContent = range.invalid
     ? 'Start time must be earlier than or equal to end time.'
-    : `${indices.length} matching ${type === 'itic' ? 'events' : 'observations'} in the selected file time range.`;
+    : `${indices.length} matching ${type === 'itic' ? 'events' : 'observations'} in the selected file time range (maximum 7 days).${wasLimited ? ' Range adjusted to 7 days.' : ''}`;
   const eventPanel = document.getElementById('eventPanel');
   eventPanel.style.display = type === 'itic' ? 'block' : 'none';
   if (type === 'itic') {
@@ -554,6 +589,7 @@ function renderEventList(indices) {
 function populateObservations() {
   seriesCatalog = buildSeriesCatalog(LOGICAL);
   analysisSelections.clear();
+  faultViewActive = false;
   eventComtrade.clear();
   document.getElementById('comtradeFiles').value = '';
   document.getElementById('comtradeStatus').textContent = 'No COMTRADE files loaded. Files stay in this browser.';
@@ -582,6 +618,7 @@ function renderCharts() {
   const container = document.getElementById('charts'); container.innerHTML = '';
   const table = document.getElementById('seriesRows'); table.innerHTML = '';
   const message = document.getElementById('seriesSummary');
+  if (['fault-record', 'trms'].includes(type)) { renderFaultRecord(container); return; }
   if (range.invalid) { container.textContent = 'Start time must be earlier than or equal to end time.'; message.textContent = ''; return; }
   if (type === 'itic' && eventIndex === null) {
     document.getElementById('seriesPanel').style.display = 'none';
@@ -623,6 +660,116 @@ function renderCharts() {
   if (['trend', 'thd-trend', 'histogram', 'scatter', 'harmonics'].includes(type)) renderAdditionalAnalysis(container, items, type);
   else if (type === 'level-time') renderLevelTimeDiagram(container, items);
   else renderGroupedElectricalSeries(container, items, type);
+}
+
+let faultViewActive = false;
+function faultItems() {
+  const oi = Number(document.getElementById('faultRecord').value);
+  const kind = document.getElementById('faultMode').value;
+  return seriesCatalog.filter(item => item.oi === oi && (kind === 'combined' ? Boolean(electricalSeriesKind(item)) : electricalSeriesKind(item) === kind) &&
+    ['Volts', 'Amps', 'Hertz'].includes(item.series.units));
+}
+function updateFaultControls(type) {
+  document.getElementById('faultControls').style.display = ['fault-record','trms'].includes(type) ? 'block' : 'none';
+  if (!['fault-record','trms'].includes(type)) { faultViewActive = false; return; }
+  if (faultViewActive === type) return;
+  faultViewActive = type;
+  document.getElementById('faultMode').value = type === 'trms' ? 'RMS' : 'WaveForm';
+  document.getElementById('faultMode').disabled = type === 'trms';
+  const select = document.getElementById('faultRecord'); select.innerHTML = '';
+  LOGICAL.observations.forEach((obs, oi) => {
+    if (!isEventObservation(obs) || !seriesCatalog.some(item => item.oi === oi && electricalSeriesKind(item) && (type !== 'trms' || electricalSeriesKind(item) === 'RMS'))) return;
+    const option = document.createElement('option'); option.value = oi; option.textContent = obs.name; select.appendChild(option);
+  });
+  select.value = select.options[0]?.value || "";
+  selectFaultRecord(false);
+}
+function selectFaultRecord(render = true) {
+  const value = document.getElementById('faultRecord').value;
+  const items = value === '' ? [] : seriesCatalog.filter(item => item.oi === Number(value));
+  const bounds = items.map(item => item.timeBounds).filter(Boolean);
+  if (bounds.length) {
+    document.getElementById('rangeStart').value = localDateInputValue(Math.floor(Math.min(...bounds.map(b => b.start)) / 1000) * 1000);
+    document.getElementById('rangeEnd').value = localDateInputValue(Math.ceil(Math.max(...bounds.map(b => b.end)) / 1000) * 1000);
+  }
+  const mode = document.getElementById('faultMode');
+  for (const option of mode.options) option.disabled = !items.some(item => option.value === 'combined' ? Boolean(electricalSeriesKind(item)) : electricalSeriesKind(item) === option.value);
+  if (mode.selectedOptions[0]?.disabled) mode.value = Array.from(mode.options).find(o => !o.disabled)?.value || 'WaveForm';
+  updateFaultChannels();
+  if (render) updateAnalysisView();
+}
+function updateFaultChannels() {
+  const target = document.getElementById('faultChannels'); target.innerHTML = '';
+  faultItems().forEach(item => {
+    const label = document.createElement('label'); label.style.marginRight = '18px';
+    const input = document.createElement('input'); input.type = 'checkbox'; input.value = item.id; input.checked = true;
+    input.addEventListener('change', renderCharts);
+    label.append(input, document.createTextNode(` ${item.channel.name} · ${item.label} [${item.series.units}] `)); target.appendChild(label);
+  });
+}
+function renderFaultRecord(container) {
+  document.getElementById('seriesPanel').style.display = 'none';
+  const value = document.getElementById('faultRecord').value;
+  if (value === '') { container.textContent = 'No fault recordings with waveform or RMS data in this file.'; return; }
+  const range = currentDataRange();
+  if (range.invalid) { container.textContent = 'Start time must be earlier than or equal to end time.'; return; }
+  const obs = LOGICAL.observations[Number(value)];
+  const checked = new Set(Array.from(document.querySelectorAll('#faultChannels input:checked'), input => input.value));
+  const items = faultItems().filter(item => checked.has(String(item.id)));
+  const heading = document.createElement('h3'); heading.textContent = obs.name; container.appendChild(heading);
+  const note = document.createElement('p');
+  const trigger = obs.timeTriggered && !obs.timeTriggered.startsWith('0001-') ? obs.timeTriggered : null;
+  note.textContent = `Trigger method: ${obs.triggerMethod || 'unavailable'} · Trigger time: ${trigger || 'not recorded'} · ${document.getElementById('faultMode').value}. Times use the file observation and recorded sample offsets.`;
+  container.appendChild(note);
+  const prepared = items.map(item => ({item, points:rawTimedPoints(item)})).filter(entry => entry.points.length);
+  if (!prepared.length) { container.appendChild(document.createTextNode('No selected channel samples in this date range.')); return; }
+  const start = Math.min(...prepared.map(e => e.points[0].x));
+  const end = Math.max(...prepared.map(e => e.points[e.points.length - 1].x));
+  const board = document.createElement('div'); board.className = 'fault-board'; container.appendChild(board);
+  const legend = document.createElement('aside'); legend.className = 'fault-legend'; board.appendChild(legend);
+  const panels = document.createElement('div'); panels.className = 'fault-panels'; board.appendChild(panels);
+  const reset = document.createElement('button'); reset.textContent = 'Reset all zoom'; container.appendChild(reset);
+  reset.addEventListener('click', () => activeCharts.forEach(chart => { chart.resetZoom(); chart.options.scales.x.min = start; chart.options.scales.x.max = end; chart.update('none'); }));
+  const colors = ['#ffb33b','#84bc69','#ad8ed5','#e49588'];
+  const panelGroup = item => item.series.units === 'Hertz' ? 'Frequency' : electricalQuantity(item) === 'I' ? 'Current' : /^(?:UL?|SS_RMS_U|SS_WF_U)(12|23|31)$/.test(item.channel.name) ? 'Line-line voltage' : 'Voltage';
+  for (const kind of ['WaveForm','RMS']) for (const title of ['Frequency','Voltage','Line-line voltage','Current']) {
+    const group = prepared.filter(e => panelGroup(e.item) === title && electricalSeriesKind(e.item) === kind);
+    if (!group.length) continue;
+    const unit = title === 'Current' ? 'A' : title === 'Frequency' ? 'Hz' : 'V';
+    const datasets = group.map((e, i) => ({label:e.item.channel.name + ' · ' + e.item.channel.phase + ' · ' + e.item.label,
+      data:e.points, borderColor:colors[i % colors.length], backgroundColor:colors[i % colors.length], pointRadius:0, borderWidth:1, tension:0}));
+    const options = numericOptions('Elapsed time from displayed recording start (ms)', unit);
+    options.scales.x.min = start; options.scales.x.max = end;
+    options.scales.x.ticks.callback = x => (x - start).toFixed(1);
+    options.plugins.tooltip.callbacks.title = entries => {
+      const x = entries[0]?.parsed.x; return `${new Date(x).toLocaleString()} · ${(x-start).toFixed(3)} ms`;
+    };
+    options.plugins.legend.display = false;
+    options.scales.y.afterFit = axis => { axis.width = 85; };
+    options.plugins.zoom.zoom.mode = 'x'; options.plugins.zoom.pan.mode = 'x';
+    const panel = document.createElement('div'); panel.className = 'fault-panel'; panels.appendChild(panel);
+    const canvas = document.createElement('canvas'); panel.appendChild(canvas);
+    const chart = new Chart(canvas, {type:'line',data:{datasets},options}); activeCharts.push(chart);
+    const groupLabel = document.createElement('h4'); groupLabel.textContent = `${kind === 'WaveForm' ? 'OSC' : 'RMS'} / ${title} [${unit}]`; legend.appendChild(groupLabel);
+    datasets.forEach((dataset, index) => {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = dataset.label;
+      button.style.color = dataset.borderColor; button.setAttribute('aria-pressed','true');
+      button.addEventListener('click', () => { const visible = chart.isDatasetVisible(index); chart.setDatasetVisibility(index,!visible); button.setAttribute('aria-pressed',String(!visible)); button.style.opacity = visible ? '0.4' : '1'; chart.update('none'); }); legend.appendChild(button);
+    });
+  }
+  activeCharts.slice(0,-1).forEach(chart => { chart.options.scales.x.ticks.display = false; chart.options.scales.x.title.display = false; chart.update('none'); });
+  const sync = ({chart}) => activeCharts.forEach(other => { if (other !== chart) { other.options.scales.x.min = chart.scales.x.min; other.options.scales.x.max = chart.scales.x.max; other.update('none'); } });
+  activeCharts.forEach(chart => { chart.options.plugins.zoom.zoom.onZoom = sync; chart.options.plugins.zoom.pan.onPan = sync; });
+  const summary = document.createElement('p'); summary.textContent = `Displayed sample span: ${(end-start).toFixed(3)} ms. This is not the disturbance duration. Statistics include all selected samples in the date range.`; container.appendChild(summary);
+  const table = document.createElement('table');
+  const header = document.createElement('tr');
+  ['Channel','Series','Unit','Samples','Minimum','Maximum'].forEach(text => { const cell = document.createElement('th'); cell.textContent = text; header.appendChild(cell); }); table.appendChild(header);
+  prepared.forEach(({item, points}) => {
+    let min = Infinity, max = -Infinity;
+    points.forEach(p => { min = Math.min(min,p.y); max = Math.max(max,p.y); });
+    const row = document.createElement('tr');
+    [item.channel.name,item.label,item.series.units,points.length,min.toFixed(5),max.toFixed(5)].forEach(text => { const cell = document.createElement('td'); cell.textContent = text; row.appendChild(cell); }); table.appendChild(row);
+  }); container.appendChild(table);
 }
 
 function seriesPoints(item, type, rangeOverride = null) {
@@ -1048,6 +1195,13 @@ function updateAnalysisControls(type) {
     let defaults = items.filter(item => type === 'thd-trend' ? /^THDF U[123]$/.test(item.channel.name) : item.series.units === 'Hertz' && item.series.values.some(v => v > 0));
     analysisSelections.set(type, new Set(spectrum ? entries.map(e => e.value) : (defaults.length ? defaults : items).slice(0, type === 'histogram' ? 1 : 3).map(item => item.id)));
   }
+  if (type === 'histogram') {
+    const unique = [...new Map(items.map(item => [scatterSeriesKey(item), item])).values()];
+    const prior = seriesCatalog.find(item => analysisSelections.get(type).has(item.id));
+    const chosen = unique.find(item => prior && scatterSeriesKey(item) === scatterSeriesKey(prior)) || unique.find(item => item.label === 'Average') || unique[0];
+    analysisSelections.set(type, new Set(chosen ? [chosen.id] : []));
+    entries.splice(0, entries.length, ...unique.map(item => ({value:item.id,label:analysisLabel(item)})));
+  }
   document.getElementById('analysisChannels').multiple = type !== 'histogram';
   replaceAnalysisOptions('analysisChannels', entries, [...analysisSelections.get(type)]);
   document.getElementById('analysisChannels').style.display = type === 'scatter' ? 'none' : 'block';
@@ -1056,10 +1210,13 @@ function updateAnalysisControls(type) {
   document.getElementById('scatterControls').style.display = type === 'scatter' ? 'block' : 'none';
   document.getElementById('spectrumControls').style.display = spectrum ? 'block' : 'none';
   if (type === 'scatter') {
-    for (const [id, preferred] of [['scatterX', /^PTot$/], ['scatterY', /^QTot$/]]) {
+    const unique = [...new Map(items.map(item => [scatterSeriesKey(item), item])).values()];
+    const scatterEntries = unique.map(item => ({value:item.id, label:`${item.channel.name} · ${item.label} [${item.series.units}] · ${item.channel.phase} · ${item.observation.dataSource?.name || ''}`}));
+    for (const [id, preferred] of [['scatterX', /^(PTot|Total Active Power)\s*$/i], ['scatterY', /^(QTot|Total Reactive Power)\s*$/i]]) {
       const current = document.getElementById(id).value;
-      const chosen = items.find(item => item.id === current) || items.find(item => preferred.test(item.channel.name)) || items[id === 'scatterX' ? 0 : 1];
-      replaceAnalysisOptions(id, entries, chosen ? [chosen.id] : []);
+      const old = seriesCatalog.find(item => item.id === current);
+      const chosen = unique.find(item => old && scatterSeriesKey(item) === scatterSeriesKey(old)) || unique.find(item => preferred.test(item.channel.name) && item.label === 'Average') || unique.find(item => preferred.test(item.channel.name)) || unique[id === 'scatterX' ? 0 : 1] || unique[0];
+      replaceAnalysisOptions(id, scatterEntries, chosen ? [chosen.id] : []);
     }
   }
   if (spectrum) {
@@ -1070,7 +1227,7 @@ function updateAnalysisControls(type) {
   }
   document.getElementById('analysisHelp').textContent = type === 'histogram'
     ? 'One channel. Every finite sample in the date range is counted; bins are [lower, upper). Resolution uses the selected channel unit.'
-    : type === 'scatter' ? 'X and Y are measured values. Pairs require identical recorded timestamps; unmatched samples are omitted.'
+    : type === 'scatter' ? 'X and Y are measured values. Matching channel segments are combined across observations. Pairs require identical timestamps; unmatched or conflicting samples are omitted.'
     : spectrum ? 'A spectrum is one recorded instant, not time samples used as harmonic orders. For this export, order comes from channel-group IDs. U and I retain their recorded units.'
     : 'Select channels to compare. Dates use the local timezone shown above; incompatible measurement families are placed in separate charts.';
 }
@@ -1088,26 +1245,49 @@ function rawTimedPoints(item) {
 function buildHistogram(item, width, range = currentDataRange()) {
   if (!Number.isFinite(width) || width < 0.00001) throw new Error('Resolution must be a finite number ≥ 0.00001.');
   const counts = new Map(); let total = 0, first = Infinity, last = -Infinity;
-  forEachTimedValue(item, (_, y) => {
+  const segments = seriesCatalog.includes(item) ? seriesCatalog.filter(candidate => matchesChart(candidate, 'histogram') && scatterSeriesKey(candidate) === scatterSeriesKey(item)) : [item];
+  const samples = new Map();
+  segments.forEach(segment => forEachTimedValue(segment, (t, y) => {
+    if (!samples.has(t)) samples.set(t, y);
+    else if (samples.get(t) !== y) samples.set(t, null);
+  }, range));
+  for (const y of samples.values()) {
+    if (y === null) continue;
     const quotient = y / width;
     const bin = Math.floor(quotient + Number.EPSILON * Math.abs(quotient) * 4);
     if (!Number.isSafeInteger(bin)) throw new Error('Resolution is too small for this measurement.');
     first = Math.min(first, bin); last = Math.max(last, bin);
     if (last - first > 20000) throw new Error('More than 20,000 bins. Increase the resolution width or narrow the date range.');
     counts.set(bin, (counts.get(bin) || 0) + 1); total++;
-  }, range);
+  }
   if (!total) return {points: [], total};
   if (last - first > 20000) throw new Error('More than 20,000 bins. Increase the resolution width or narrow the date range.');
   const points = [];
   for (let bin = first; bin <= last; bin++) points.push({ x: (bin + 0.5) * width, y: counts.get(bin) || 0, lower: bin * width, upper: (bin + 1) * width });
   return { points, total };
 }
+function scatterSeriesKey(item) {
+  return JSON.stringify([item.observation.dataSource, item.channel.definition, item.channel.setting,
+    item.channel.instance?.channelGroupID, item.series.valueType, item.series.units, item.series.characteristic]);
+}
 function pairMeasurements(xItem, yItem) {
-  const xValues = new Map();
-  forEachTimedValue(xItem, (t, value) => xValues.set(t, value));
-  const points = [];
-  forEachTimedValue(yItem, (t, y) => { if (xValues.has(t)) points.push({x:xValues.get(t), y, timestamp:t}); });
-  return points;
+  // A recorder may split one channel across many observations. Join only the
+  // same source/channel/statistic, then pair timestamps without interpolation.
+  function valuesFor(selected) {
+    const key = scatterSeriesKey(selected), values = new Map();
+    const segments = seriesCatalog.includes(selected) ? seriesCatalog.filter(item => matchesChart(item, 'scatter') && scatterSeriesKey(item) === key) : [selected];
+    for (const item of segments.length ? segments : [selected]) {
+      forEachTimedValue(item, (t, value) => {
+        if (!values.has(t)) values.set(t, value);
+        else if (values.get(t) !== value) values.set(t, null); // ambiguous overlapping records
+      });
+    }
+    return values;
+  }
+  const xValues = valuesFor(xItem), yValues = valuesFor(yItem), points = [];
+  for (const [t, y] of yValues) if (y !== null && xValues.has(t) && xValues.get(t) !== null)
+    points.push({x:xValues.get(t), y, timestamp:t});
+  return points.sort((a,b) => a.timestamp-b.timestamp);
 }
 function analysisChart(container, title, type, datasets, options, noteText) {
   if (!datasets.length) return;

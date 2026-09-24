@@ -36,12 +36,16 @@ test('viewer loads the shared library, prepares every observation, and exports m
   let downloadedBlob, downloadName;
   function node() {
     return { style: {}, classList: { add() {}, remove() {} }, value: '0', children: [],
-      innerHTML: '', setAttribute() {}, appendChild(child) { this.children.push(child); }, addEventListener() {}, querySelector: node, remove() {},
+      get options() { return this.children; }, get selectedOptions() { return this.children.filter(c => c.value === this.value); },
+      get innerHTML() { return ''; }, set innerHTML(value) { this.children = []; },
+      append(...children) { this.children.push(...children); }, setAttribute() {}, appendChild(child) { this.children.push(child); }, addEventListener() {}, querySelector: node, remove() {},
       click() { if (this.download) downloadName = this.download; } };
   }
   const elements = new Map();
   const document = {
     getElementById(id) { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    createTextNode(text) { return {textContent:text}; },
+    querySelectorAll() { return elements.get("faultChannels").children.flatMap(label => label.children).filter(input => input.checked); },
     createElement: node
   };
   const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
@@ -74,6 +78,12 @@ test('viewer loads the shared library, prepares every observation, and exports m
   assert.match(document.getElementById('meta').textContent, /29 observations/);
   assert.equal(document.getElementById('chartType').value, 'level-time', 'Level Time Diagram is the default analysis');
   assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(LOGICAL)', context)), expected);
+  const initialEnd = new Date(document.getElementById('rangeEnd').value).getTime();
+  vm.runInContext(`document.getElementById('rangeStart').value = localDateInputValue(${initialEnd - 14 * 24 * 60 * 60 * 1000}); updateAnalysisView('start')`, context);
+  assert.equal(new Date(document.getElementById('rangeEnd').value).getTime() -
+    new Date(document.getElementById('rangeStart').value).getTime(), 7 * 24 * 60 * 60 * 1000,
+  'changing the start date limits the visible window to seven days');
+  vm.runInContext('resetDataRange()', context);
   for (const type of ['trend', 'osc', 'harmonics', 'level-time', 'itic']) {
     document.getElementById('chartType').value = type;
     const priorChartCount = charts.length;
@@ -97,6 +107,38 @@ test('viewer loads the shared library, prepares every observation, and exports m
         'empty zero-only frequency data should not be shown as a measurement');
     }
   }
+  for (const [type, prefix, count] of [['fault-record','SS_WF_',7], ['trms','SS_RMS_',6]]) {
+    const mode = document.getElementById('faultMode');
+    mode.children = ['WaveForm','RMS'].map(value => ({value}));
+    document.getElementById('chartType').value = type;
+    const first = charts.length;
+    vm.runInContext('updateAnalysisView()', context);
+    assert.equal(document.getElementById('faultRecord').options.length, count);
+    const faultCharts = charts.slice(first);
+    assert.equal(faultCharts.length, 2, 'recorded voltage and current get separate panels');
+    const datasets = faultCharts.flatMap(chart => chart.config.data.datasets);
+    assert.equal(datasets.length, 8);
+    assert.ok(datasets.every(d => d.label.startsWith(prefix)));
+    const record = expected.observations[20];
+    for (const dataset of datasets) {
+      const channel = record.channels.find(c => dataset.label.startsWith(c.name + ' ·'));
+      const source = channel.series.find(s => ['Volts','Amps'].includes(s.units));
+      assert.deepStrictEqual(Array.from(dataset.data, p => p.y), source.values);
+    }
+    assert.equal(faultCharts[0].options.scales.x.min, faultCharts[1].options.scales.x.min);
+    assert.equal(faultCharts[0].options.scales.x.max, faultCharts[1].options.scales.x.max);
+  }
+  document.getElementById('faultMode').children = ['WaveForm', 'RMS', 'combined'].map(value => ({value}));
+  document.getElementById('chartType').value = 'fault-record';
+  vm.runInContext('updateAnalysisView()', context);
+  document.getElementById('faultMode').value = 'combined';
+  const combinedStart = charts.length;
+  vm.runInContext('updateFaultChannels(); renderCharts()', context);
+  const combinedCharts = charts.slice(combinedStart);
+  assert.equal(combinedCharts.length, 4, 'combined fault view stacks voltage/current waveform and RMS panels');
+  assert.deepStrictEqual(combinedCharts.map(chart => chart.config.data.datasets.length), [4, 4, 4, 4]);
+  document.getElementById('chartType').value = 'level-time';
+  vm.runInContext('resetDataRange()', context);
   document.getElementById('chartType').value = 'level-time';
   document.getElementById('levelMeasurement').value = 'voltage';
   const voltageStart = charts.length;

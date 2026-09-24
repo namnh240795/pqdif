@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PQDIF Data Series</title>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="./lib/pqdif.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #202020; color: #e5e5e5; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 20px 28px; background: #282828; border-bottom: 1px solid #414141; }
+  h1 { margin: 0 0 6px; font-size: 23px; }
+  header p { margin: 0; color: #bdbdbd; }
+  a { color: #ffad58; }
+  main { padding: 22px 28px; }
+  .toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+  .toolbar label { display: grid; gap: 6px; color: #bdbdbd; }
+  input { background: #282828; color: #e5e5e5; border: 1px solid #626262; border-radius: 2px; padding: 9px 10px; font: inherit; }
+  input:focus-visible { outline: 2px solid #ff8300; }
+  #search { min-width: min(440px, 100%); }
+  #status { min-height: 22px; color: #c8c8c8; margin: 0 0 12px; }
+  .table-wrap { border: 1px solid #555; overflow: auto; max-height: calc(100vh - 210px); }
+  table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+  th, td { padding: 10px 12px; border-bottom: 1px solid #414141; white-space: nowrap; }
+  th { position: sticky; top: 0; z-index: 1; background: #303030; color: #f4f4f4; }
+  td:first-child { color: #ffad58; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  tr:nth-child(even) { background: #262626; }
+  tbody tr:hover { background: #383838; }
+  td:nth-child(2), td:nth-child(3), td:nth-child(6) { white-space: normal; min-width: 140px; }
+  @media (max-width: 700px) { header, main { padding: 16px; } .table-wrap { max-height: calc(100vh - 250px); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>PQDIF data series</h1>
+  <p>One row for every stored series in the file. <a href="./index.html">Open diagram viewer</a></p>
+</header>
+<main>
+  <div class="toolbar">
+    <label>Open a PQDIF file <input id="fileInput" type="file" accept=".pqd"></label>
+    <label>Search rows <input id="search" type="search" placeholder="ID, observation, channel, unit…" disabled></label>
+  </div>
+  <p id="status" role="status" aria-live="polite">Select a .pqd file to list its data series.</p>
+  <div class="table-wrap" role="region" aria-label="All PQDIF data series" tabindex="0">
+    <table>
+      <thead><tr><th>ID</th><th>Observation</th><th>Channel</th><th>Phase</th><th>Quantity type</th><th>Value type · group</th><th>Unit</th><th>Samples</th></tr></thead>
+      <tbody id="seriesRows"></tbody>
+    </table>
+  </div>
+</main>
+<script>
+const fileInput = document.getElementById('fileInput');
+const search = document.getElementById('search');
+const status = document.getElementById('status');
+const body = document.getElementById('seriesRows');
+let rows = [];
+let loadedFileName = '';
+
+function seriesRows(data) {
+  const result = [];
+  data.observations.forEach((observation, oi) => {
+    observation.channels.forEach((channel, ci) => {
+      channel.series.forEach((series, si) => {
+        const valueType = series.valueTypeName || Pqdif.seriesValueTypeNames[series.valueType] || `Series ${si + 1}`;
+        result.push([
+          `o${oi}-c${ci}-s${si}`,
+          observation.name || '—',
+          channel.name || '—',
+          channel.phase || '—',
+          channel.quantityTypeName || '—',
+          `${valueType} · group ${channel.instance?.channelGroupID ?? '—'}`,
+          series.units || '—',
+          String(series.count ?? series.values?.length ?? 0)
+        ]);
+      });
+    });
+  });
+  return result;
+}
+
+function renderRows(query = '') {
+  const needle = query.trim().toLocaleLowerCase();
+  const matching = needle ? rows.filter(row => row.some(value => value.toLocaleLowerCase().includes(needle))) : rows;
+  const fragment = document.createDocumentFragment();
+  for (const row of matching) {
+    const tr = document.createElement('tr');
+    for (const value of row) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    fragment.appendChild(tr);
+  }
+  body.replaceChildren(fragment);
+  status.textContent = `${loadedFileName}: ${matching.length.toLocaleString()} of ${rows.length.toLocaleString()} series${needle ? ' match the search' : ''}.`;
+}
+
+async function loadFile(file) {
+  if (!file) return;
+  search.disabled = true;
+  status.textContent = `Reading ${file.name}…`;
+  body.replaceChildren();
+  try {
+    const data = Pqdif.parsePqdif(await file.arrayBuffer());
+    rows = seriesRows(data);
+    loadedFileName = file.name;
+    search.value = '';
+    search.disabled = false;
+    renderRows();
+  } catch (error) {
+    rows = [];
+    loadedFileName = '';
+    status.textContent = `Could not read ${file.name}: ${error.message}`;
+  }
+}
+
+fileInput.addEventListener('change', () => loadFile(fileInput.files[0]));
+search.addEventListener('input', () => renderRows(search.value));
+</script>
+</body>
+</html>
