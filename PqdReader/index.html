@@ -10,75 +10,97 @@
 <script src="./lib/pqdif.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; }
-  .header { background: linear-gradient(135deg, #1e293b, #334155); padding: 20px 30px; border-bottom: 1px solid #475569; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #202020; color: #e5e5e5; }
+  .header { background: linear-gradient(135deg, #282828, #414141); padding: 20px 30px; border-bottom: 1px solid #626262; }
   .header h1 { font-size: 1.5rem; font-weight: 600; }
-  .header .meta { font-size: 0.85rem; color: #94a3b8; margin-top: 4px; }
-  .controls { padding: 16px 30px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
-  .controls label { font-size: 0.85rem; color: #94a3b8; }
-  .controls select, .controls input[type=file], .controls button { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; }
+  .header .meta { font-size: 0.85rem; color: #bdbdbd; margin-top: 4px; }
+  .controls { padding: 16px 30px; background: #282828; border-bottom: 1px solid #414141; display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+  .controls label { font-size: 0.85rem; color: #bdbdbd; }
+  .controls select, .controls input[type=file], .controls button { background: #202020; color: #e5e5e5; border: 1px solid #626262; padding: 6px 12px; border-radius: 6px; font-size: 0.85rem; }
   .controls input[type=file] { padding: 4px; }
-  .timezone-control { display: grid; gap: 4px; min-width: 150px; color: #cbd5e1; }
-  .timezone-label { color: #94a3b8; font-size: .8rem; }
-  .range-message { flex-basis: 100%; color: #94a3b8; font-size: .8rem; }
-  .controls input[type=datetime-local] { background: #0f172a; color: #e2e8f0; border: 1px solid #475569; padding: 6px 8px; border-radius: 6px; font-size: .85rem; color-scheme: dark; }
+  .timezone-control { display: grid; gap: 4px; min-width: 150px; color: #d5d5d5; }
+  .timezone-label { color: #bdbdbd; font-size: .8rem; }
+  .range-message { flex-basis: 100%; color: #bdbdbd; font-size: .8rem; }
+  .controls input[type=datetime-local] { background: #202020; color: #e5e5e5; border: 1px solid #626262; padding: 6px 8px; border-radius: 6px; font-size: .85rem; color-scheme: dark; }
   .charts { padding: 20px 30px; display: grid; gap: 24px; }
-  .chart-card { background: #1e293b; border-radius: 10px; border: 1px solid #334155; padding: 20px; }
-  .chart-card h2 { font-size: 1rem; font-weight: 500; margin-bottom: 12px; color: #cbd5e1; }
+  .chart-card { background: #282828; border-radius: 10px; border: 1px solid #414141; padding: 20px; }
+  .chart-card h2 { font-size: 1rem; font-weight: 500; margin-bottom: 12px; color: #d5d5d5; }
   .chart-tools { display: flex; justify-content: flex-end; gap: 8px; margin: -4px 0 10px; }
-  .chart-tools button { background: #0f172a; color: #cbd5e1; border: 1px solid #475569; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
-  .chart-tools button:hover { border-color: #60a5fa; color: #fff; }
+  .chart-tools button { background: #202020; color: #d5d5d5; border: 1px solid #626262; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+  .chart-tools button:hover { border-color: #ff8300; color: #fff; }
   .chart-container { position: relative; height: 300px; }
   .voltage-level-chart .chart-container { height: 260px; }
   .level-time-chart .chart-container { height: min(72vh, 720px); min-height: 420px; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; }
-  .stat { background: #0f172a; border-radius: 8px; padding: 12px 16px; border: 1px solid #334155; }
-  .stat .label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+  .stat { background: #202020; border-radius: 8px; padding: 12px 16px; border: 1px solid #414141; }
+  .stat .label { font-size: 0.75rem; color: #aaaaaa; text-transform: uppercase; letter-spacing: 0.05em; }
   .stat .value { font-size: 1.25rem; font-weight: 600; margin-top: 2px; }
   .phase-a { color: #f87171; }
-  .phase-b { color: #60a5fa; }
+  .phase-b { color: #ff8300; }
   .phase-c { color: #34d399; }
   .phase-n { color: #fbbf24; }
-  .loading { text-align: center; padding: 60px; color: #64748b; font-size: 1.1rem; }
-  .drop-zone { border: 2px dashed #475569; border-radius: 12px; padding: 40px; text-align: center; color: #64748b; margin: 20px 30px; cursor: pointer; transition: all 0.2s; }
-  .drop-zone:hover, .drop-zone.dragover { border-color: #60a5fa; background: rgba(96,165,250,0.05); color: #94a3b8; }
+  .loading { text-align: center; padding: 60px; color: #aaaaaa; font-size: 1.1rem; }
+  .drop-zone { border: 2px dashed #626262; border-radius: 12px; padding: 40px; text-align: center; color: #aaaaaa; margin: 20px 30px; cursor: pointer; transition: all 0.2s; }
+  .drop-zone:hover, .drop-zone.dragover { border-color: #ff8300; background: rgba(96,165,250,0.05); color: #bdbdbd; }
   .drop-zone p { font-size: 1rem; margin-bottom: 8px; }
   .drop-zone small { font-size: 0.8rem; }
 
-  .mapping { margin: 20px 30px; padding: 22px; background: #1e293b; border: 1px solid #475569; border-radius: 12px; }
+  .mapping { margin: 20px 30px; padding: 22px; background: #282828; border: 1px solid #626262; border-radius: 12px; }
   .mapping summary { cursor: pointer; font-size: 1.1rem; font-weight: 600; }
-  .mapping summary:focus-visible { outline: 2px solid #60a5fa; outline-offset: 6px; }
-  .mapping p { color: #cbd5e1; line-height: 1.6; margin: 14px 0; max-width: 100ch; }
+  .mapping summary:focus-visible { outline: 2px solid #ff8300; outline-offset: 6px; }
+  .mapping p { color: #d5d5d5; line-height: 1.6; margin: 14px 0; max-width: 100ch; }
   .mapping h3 { font-size: 1rem; margin: 22px 0 12px; }
   .mapping code { overflow-wrap: anywhere; color: #bae6fd; }
   .flow-row { display: flex; align-items: stretch; gap: 12px; }
-  .flow-node { flex: 1; min-width: 0; padding: 16px; border: 1px solid #64748b; border-radius: 8px; background: #0f172a; }
+  .flow-node { flex: 1; min-width: 0; padding: 16px; border: 1px solid #aaaaaa; border-radius: 8px; background: #202020; }
   .flow-node strong { display: block; color: #f1f5f9; margin-bottom: 8px; }
-  .flow-node small { display: block; color: #cbd5e1; line-height: 1.6; margin-top: 8px; }
-  .flow-node.source { border-top: 3px solid #60a5fa; }
+  .flow-node small { display: block; color: #d5d5d5; line-height: 1.6; margin-top: 8px; }
+  .flow-node.source { border-top: 3px solid #ff8300; }
   .flow-node.chart { border-top: 3px solid #34d399; }
   .flow-node.event { border-top: 3px solid #fbbf24; }
-  .flow-arrow { align-self: center; color: #94a3b8; font-size: 1.5rem; }
-  .flow-down { text-align: center; color: #94a3b8; padding: 10px; line-height: 1.5; }
-  .mapping .flow-note { font-size: 0.85rem; color: #94a3b8; }
+  .flow-arrow { align-self: center; color: #bdbdbd; font-size: 1.5rem; }
+  .flow-down { text-align: center; color: #bdbdbd; padding: 10px; line-height: 1.5; }
+  .mapping .flow-note { font-size: 0.85rem; color: #bdbdbd; }
   .time-flow { list-style: none; counter-reset: time-step; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
   .time-flow li { counter-increment: time-step; }
-  .time-flow li::before { content: counter(time-step); display: inline-block; color: #60a5fa; font-weight: 700; margin-bottom: 10px; }
+  .time-flow li::before { content: counter(time-step); display: inline-block; color: #ff8300; font-weight: 700; margin-bottom: 10px; }
   @media (max-width: 760px) {
     .mapping { margin: 16px; padding: 16px; }
     .flow-row { flex-direction: column; }
     .flow-arrow { transform: rotate(90deg); }
     .time-flow { grid-template-columns: 1fr; }
   }
-  .series-panel { margin: 20px 30px; padding: 20px; background: #1e293b; border: 1px solid #475569; border-radius: 10px; }
+  .series-panel { margin: 20px 30px; padding: 20px; background: #282828; border: 1px solid #626262; border-radius: 10px; }
   .series-panel h2 { font-size: 1.1rem; }
-  .series-panel p, .series-note { margin: 12px 0; color: #cbd5e1; font-size: .85rem; line-height: 1.6; }
+  .series-panel p, .series-note { margin: 12px 0; color: #d5d5d5; font-size: .85rem; line-height: 1.6; }
   .series-scroll { overflow: auto; max-height: 350px; }
   .series-panel table { width: 100%; border-collapse: collapse; font-size: .8rem; text-align: left; }
-  .series-panel th, .series-panel td { padding: 10px; border-bottom: 1px solid #334155; }
-  .series-panel th { position: sticky; top: 0; background: #0f172a; white-space: nowrap; }
-  .series-panel tr:hover { background: #334155; }
-  .series-panel input { accent-color: #60a5fa; cursor: pointer; }
+  .series-panel th, .series-panel td { padding: 10px; border-bottom: 1px solid #414141; }
+  .series-panel th { position: sticky; top: 0; background: #202020; white-space: nowrap; }
+  .series-panel tr:hover { background: #414141; }
+  .series-panel input { accent-color: #ff8300; cursor: pointer; }
+
+  /* Flat charcoal panels and orange controls echo the WebPQ analysis cockpit. */
+  .header { background: #222; padding: 18px 26px; }
+  .controls, .series-panel, .mapping { background: #222; }
+  .controls select, .controls input, .controls button { border-radius: 2px; }
+  .controls input[type=number] { background: #222; color: #ddd; border: 1px solid #666; padding: 7px; }
+  .controls select:focus, .controls input:focus { outline: 2px solid #e69a59; outline-offset: 1px; }
+  .controls button, .chart-card button { background: #ff8300; color: #fff; border: 0; border-radius: 0; padding: 7px 12px; cursor: pointer; }
+  .controls button:hover, .chart-card button:hover { background: #e77400; }
+  .charts { gap: 16px; padding: 18px 26px; }
+  .chart-card { background: #282828; border: 1px solid #3d3d3d; border-radius: 0; padding: 18px 20px; }
+  .chart-card h2 { text-align: center; font-weight: 600; font-size: 14px; color: #e3e3e3; }
+  .chart-range { text-align: center; color: #c6c6c6; font-size: 12px; margin: 0 0 18px; }
+  .chart-container { height: 420px; }
+  .voltage-level-chart .chart-container { height: 320px; }
+  .chart-card .series-note { color: #b5b5b5; font-size: 12px; }
+  .series-panel, .mapping { border-radius: 2px; }
+  @media (max-width: 760px) {
+    .charts { padding: 12px; }
+    .chart-card { padding: 14px 10px; }
+    .chart-container, .voltage-level-chart .chart-container { height: 340px; }
+  }
 </style>
 </head>
 <body>
@@ -872,7 +894,7 @@ function renderLevelTimeDiagram(container, items, voltageGroup = null) {
   tools.appendChild(reset); card.appendChild(tools);
   const datasets = [];
   let finiteCount = 0;
-  const colors = { Average: '#d6c6c3', Minimum: '#a8a29e', Maximum: '#f87171' };
+  const colors = { Average: '#bea49b', Minimum: '#998781', Maximum: '#e0d5d0' };
   series.forEach(item => {
     const result = seriesPoints(item, 'trend');
     if (!result.points.length) return;
@@ -901,8 +923,8 @@ function renderLevelTimeDiagram(container, items, voltageGroup = null) {
   options.scales.x.title.text = 'Date and time';
   options.scales.x.ticks.callback = value => new Date(value).toLocaleDateString(undefined,
     { year: 'numeric', month: '2-digit', day: '2-digit' });
-  options.scales.x.grid.color = '#475569';
-  options.scales.x.grid.borderDash = [5, 6];
+  options.scales.x.grid.color = '#717171';
+  options.scales.x.border.dash = [5, 6];
   options.scales.y.title.text = voltage ? 'Voltage (V)' : `${quantity} (${unit})`;
   if (voltage) {
     options.interaction = { mode: 'nearest', intersect: false };
@@ -966,7 +988,7 @@ function renderVoltageView(container, items, key) {
     options.plugins.legend.position = 'left'; options.plugins.legend.align = 'start';
     options.scales.x.title.text = 'File date and time';
     options.scales.x.ticks.callback = value => new Date(value).toLocaleString();
-    options.scales.x.grid.color = '#475569';
+    options.scales.x.grid.color = '#717171';
     options.scales.x.border = { dash: [5, 6] };
     options.scales.y.title.text = unit || 'Dimensionless';
     options.scales.x.min = currentDataRange().start ?? undefined;
@@ -988,7 +1010,7 @@ function renderVoltageView(container, items, key) {
 
 // Analysis selections are preserved independently when switching chart types.
 const analysisSelections = new Map();
-const ANALYSIS_COLORS = ['#60a5fa', '#fbbf24', '#f87171', '#a78bfa', '#34d399', '#fb923c'];
+const ANALYSIS_COLORS = ['#c2a79d', '#d7cfca', '#a8b9c7', '#b6aa85', '#9eafa1', '#c59282'];
 function isSpectrumSeries(item) {
   return /Steady State Individual (Voltage|Current) Harmonics\b/.test(item.observation?.name || '') &&
     /\b[UI][123]\b/.test(item.channel.name) && harmonicGroup(item) !== null &&
@@ -1116,7 +1138,7 @@ function renderAdditionalAnalysis(container, items, type) {
       options.scales.y.beginAtZero = true;
       options.plugins.tooltip.callbacks.title = points => { const p = points[0]?.raw; return p ? `[${p.lower.toPrecision(8)}, ${p.upper.toPrecision(8)}) ${item.series.units}` : ''; };
       options.plugins.tooltip.callbacks.label = point => `${point.parsed.y} samples (${(100 * point.parsed.y / result.total).toFixed(2)}%)`;
-      analysisChart(container, 'Histogram', 'bar', [{label:analysisLabel(item), data:result.points, backgroundColor:'#60a5fa', barPercentage:0.85, categoryPercentage:1}], options,
+      analysisChart(container, 'Histogram', 'bar', [{label:analysisLabel(item), data:result.points, backgroundColor:'#bfa59b', borderColor:'#d4bdb3', borderWidth:1, barPercentage:0.85, categoryPercentage:1}], options,
         `${result.total.toLocaleString()} samples counted without downsampling · ${result.points.length} bins · width ${width} ${item.series.units}`);
     } catch (error) { container.textContent = error.message; }
     return;
@@ -1132,7 +1154,7 @@ function renderAdditionalAnalysis(container, items, type) {
     const options = numericOptions(`${x.channel.name} · ${x.label} [${x.series.units}]`, `${y.channel.name} · ${y.label} [${y.series.units}]`);
     options.plugins.tooltip.callbacks.title = entries => new Date(entries[0]?.raw.timestamp).toLocaleString('en-GB');
     options.plugins.tooltip.callbacks.label = entry => [`${x.channel.name}: ${entry.parsed.x} ${x.series.units}`, `${y.channel.name}: ${entry.parsed.y} ${y.series.units}`];
-    analysisChart(container, 'Scatter Plot', 'scatter', [{label:`${x.channel.name} vs ${y.channel.name}`, data:points, pointRadius:2, backgroundColor:'#60a5fa99'}], options,
+    analysisChart(container, 'Scatter Plot', 'scatter', [{label:`${x.channel.name} vs ${y.channel.name}`, data:points, pointRadius:2, backgroundColor:'#c2a79d99'}], options,
       `${paired.length.toLocaleString()} matching timestamps · ${points.length.toLocaleString()} points displayed. No interpolation.`);
     return;
   }
@@ -1377,6 +1399,12 @@ function createChartCard(container, title, unit) {
   card.className = 'chart-card';
   card.innerHTML = '<h2></h2><div class="chart-container"><canvas></canvas></div>';
   card.querySelector('h2').textContent = title;
+  const range = currentDataRange();
+  if (Number.isFinite(range.start) && Number.isFinite(range.end)) {
+    const caption = document.createElement('p'); caption.className = 'chart-range';
+    caption.textContent = `${new Date(range.start).toLocaleString('en-GB')} — ${new Date(range.end).toLocaleString('en-GB')} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`;
+    card.querySelector('h2').insertAdjacentElement?.('afterend', caption);
+  }
   container.appendChild(card);
   return card;
 }
@@ -1384,6 +1412,7 @@ function createChartCard(container, title, unit) {
 function chartOptions(unit) {
   return {
     responsive: true, maintainAspectRatio: false,
+    layout: { padding: { top: 8, right: 12, bottom: 8 } },
     interaction: { mode: 'index', intersect: false },
     plugins: {
       zoom: {
@@ -1392,14 +1421,27 @@ function chartOptions(unit) {
         zoom: {
           wheel: { enabled: true },
           pinch: { enabled: true },
-          drag: { enabled: true, backgroundColor: 'rgba(96,165,250,0.18)', borderColor: '#60a5fa', borderWidth: 1 },
+          drag: { enabled: true, backgroundColor: 'rgba(255,131,0,0.14)', borderColor: '#ff8300', borderWidth: 1 },
           mode: 'xy'
         }
       },
-      legend: { labels: { color: '#94a3b8', font: { size: 11 } } },
+      legend: {
+        position: typeof window !== 'undefined' && window.innerWidth < 760 ? 'top' : 'left',
+        align: 'start', maxWidth: 210,
+        labels: { color: '#d0d0d0', boxWidth: 10, boxHeight: 10, padding: 12, font: { size: 11 },
+          generateLabels(chart) {
+            return Chart.defaults.plugins.legend.labels.generateLabels(chart).map(label => {
+              const full = label.text;
+              // The complete dataset label remains available in the tooltip.
+              const short = full.split(' · Steady State')[0];
+              return { ...label, text: short.length > 29 ? short.slice(0, 28) + '…' : short };
+            });
+          }
+        }
+      },
       tooltip: {
-        backgroundColor: '#1e293b', borderColor: '#475569', borderWidth: 1,
-        titleColor: '#e2e8f0', bodyColor: '#cbd5e1',
+        backgroundColor: '#333333', borderColor: '#858585', borderWidth: 1, cornerRadius: 2, padding: 10,
+        titleColor: '#ffffff', bodyColor: '#dddddd',
         callbacks: {
           title: (items) => {
             const sec = items[0]?.parsed?.x ?? 0;
@@ -1412,14 +1454,16 @@ function chartOptions(unit) {
     scales: {
       x: {
         type: 'linear',
-        title: { display: true, text: 'Time', color: '#64748b' },
-        ticks: { color: '#64748b', callback: (v) => formatTime(v) },
-        grid: { color: '#1e293b' },
+        border: { color: '#a0a0a0', dash: [5, 6] },
+        title: { display: true, text: 'Time', color: '#bdbdbd' },
+        ticks: { color: '#bdbdbd', callback: (v) => formatTime(v) },
+        grid: { color: '#666666' },
       },
       y: {
-        title: { display: true, text: unit || 'Value', color: '#64748b' },
-        ticks: { color: '#64748b' },
-        grid: { color: '#1e293b' },
+        title: { display: true, text: unit || 'Value', color: '#bdbdbd' },
+        ticks: { color: '#bdbdbd' },
+        grid: { color: '#484848' },
+        border: { color: '#a0a0a0' },
       },
     },
   };
