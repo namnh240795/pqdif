@@ -106,6 +106,15 @@
 .fault-panel { position:relative; height:190px; border-bottom:1px solid #484848; }
 .fault-legend h4 { margin:12px 0 6px; font-size:12px; }
 .fault-legend button { display:block; background:transparent; border:0; text-align:left; font-size:12px; padding:4px; max-width:250px; overflow-wrap:anywhere; }
+.osc-heading { text-align:center; background:#262626; padding:14px; }
+.osc-heading h2 { font-size:15px; margin:0 0 6px; }
+.osc-heading p { margin:0; color:#bbb; font-size:12px; }
+.osc-board { margin-top:0; }
+.osc-board .fault-panels { overflow-x:auto; }
+.osc-panel { height:215px; }
+.osc-summary { width:100%; border-collapse:collapse; background:#282828; font-size:12px; }
+.osc-summary th, .osc-summary td { padding:6px 10px; border-bottom:1px solid #414141; text-align:left; }
+.osc-summary th { background:#333; }
 @media(max-width:760px) { .fault-board { grid-template-columns:1fr; } .fault-legend { max-height:200px; overflow:auto; } }
 </style>
 </head>
@@ -135,6 +144,10 @@
   <div id="faultControls" style="display:none;flex-basis:100%">
     <label for="faultRecord">Fault recording</label>
     <select id="faultRecord" onchange="selectFaultRecord()"></select>
+    <div id="oscCaptureControl" style="display:none">
+      <label for="oscCapture">OSC capture</label>
+      <select id="oscCapture" onchange="selectOscCapture()"></select>
+    </div>
     <label for="faultMode">Recording type</label>
     <select id="faultMode" onchange="updateFaultChannels(); renderCharts()"><option value="WaveForm">OSC / Waveform</option><option value="RMS">RMS</option><option value="combined">OSC + RMS · stacked</option></select>
     <button type="button" onclick="selectFaultRecord()">Fit recording range</button>
@@ -590,6 +603,8 @@ function populateObservations() {
   seriesCatalog = buildSeriesCatalog(LOGICAL);
   analysisSelections.clear();
   faultViewActive = false;
+  nonFaultRange = null;
+  oscCaptures = [];
   eventComtrade.clear();
   document.getElementById('comtradeFiles').value = '';
   document.getElementById('comtradeStatus').textContent = 'No COMTRADE files loaded. Files stay in this browser.';
@@ -618,6 +633,7 @@ function renderCharts() {
   const container = document.getElementById('charts'); container.innerHTML = '';
   const table = document.getElementById('seriesRows'); table.innerHTML = '';
   const message = document.getElementById('seriesSummary');
+  if (type === 'osc') { renderOscDiagram(container); return; }
   if (['fault-record', 'trms'].includes(type)) { renderFaultRecord(container); return; }
   if (range.invalid) { container.textContent = 'Start time must be earlier than or equal to end time.'; message.textContent = ''; return; }
   if (type === 'itic' && eventIndex === null) {
@@ -663,6 +679,8 @@ function renderCharts() {
 }
 
 let faultViewActive = false;
+let nonFaultRange = null;
+let oscCaptures = [];
 function faultItems() {
   const oi = Number(document.getElementById('faultRecord').value);
   const kind = document.getElementById('faultMode').value;
@@ -670,15 +688,30 @@ function faultItems() {
     ['Volts', 'Amps', 'Hertz'].includes(item.series.units));
 }
 function updateFaultControls(type) {
-  document.getElementById('faultControls').style.display = ['fault-record','trms'].includes(type) ? 'block' : 'none';
-  if (!['fault-record','trms'].includes(type)) { faultViewActive = false; return; }
+  document.getElementById('faultControls').style.display = ['osc','fault-record','trms'].includes(type) ? 'block' : 'none';
+  document.getElementById('oscCaptureControl').style.display = type === 'osc' ? 'block' : 'none';
+  if (!['osc','fault-record','trms'].includes(type)) {
+    if (faultViewActive && nonFaultRange) {
+      document.getElementById('rangeStart').value = nonFaultRange.start;
+      document.getElementById('rangeEnd').value = nonFaultRange.end;
+    }
+    faultViewActive = false;
+    nonFaultRange = null;
+    oscCaptures = [];
+    return;
+  }
   if (faultViewActive === type) return;
+  if (!faultViewActive) nonFaultRange = {
+    start: document.getElementById('rangeStart').value,
+    end: document.getElementById('rangeEnd').value
+  };
   faultViewActive = type;
   document.getElementById('faultMode').value = type === 'trms' ? 'RMS' : 'WaveForm';
-  document.getElementById('faultMode').disabled = type === 'trms';
+  document.getElementById('faultMode').disabled = type === 'trms' || type === 'osc';
   const select = document.getElementById('faultRecord'); select.innerHTML = '';
   LOGICAL.observations.forEach((obs, oi) => {
-    if (!isEventObservation(obs) || !seriesCatalog.some(item => item.oi === oi && electricalSeriesKind(item) && (type !== 'trms' || electricalSeriesKind(item) === 'RMS'))) return;
+    if (!isEventObservation(obs) || !seriesCatalog.some(item => item.oi === oi && electricalSeriesKind(item) &&
+      (type === 'trms' ? electricalSeriesKind(item) === 'RMS' : type === 'osc' ? electricalSeriesKind(item) === 'WaveForm' : true))) return;
     const option = document.createElement('option'); option.value = oi; option.textContent = obs.name; select.appendChild(option);
   });
   select.value = select.options[0]?.value || "";
@@ -695,8 +728,78 @@ function selectFaultRecord(render = true) {
   const mode = document.getElementById('faultMode');
   for (const option of mode.options) option.disabled = !items.some(item => option.value === 'combined' ? Boolean(electricalSeriesKind(item)) : electricalSeriesKind(item) === option.value);
   if (mode.selectedOptions[0]?.disabled) mode.value = Array.from(mode.options).find(o => !o.disabled)?.value || 'WaveForm';
+  if (document.getElementById('chartType').value === 'osc') {
+    oscCaptures = value === '' ? [] : oscCaptureSegments(LOGICAL.observations[Number(value)]);
+    const select = document.getElementById('oscCapture'); select.innerHTML = '';
+    oscCaptures.forEach((capture, index) => {
+      const option = document.createElement('option'); option.value = index;
+      option.textContent = `Capture ${index + 1} · ${new Date(capture.startMs).toLocaleString()} · ${((capture.endMs - capture.startMs)).toFixed(1)} ms`;
+      select.appendChild(option);
+    });
+    select.value = oscCaptures.length ? String(oscCaptures.length - 1) : '';
+    fitOscCaptureRange();
+  }
   updateFaultChannels();
   if (render) updateAnalysisView();
+}
+
+function oscCaptureSegments(observation) {
+  const channel = observation.channels.find(item => item.quantityTypeName === 'WaveForm' &&
+    item.series.some(isTimeSeries));
+  const time = channel?.series.find(isTimeSeries)?.values;
+  const base = observationStartMs(observation);
+  if (!time?.length || base === null) return [];
+  const deltas = [];
+  for (let i = 1; i < Math.min(time.length, 1001); i++) {
+    const delta = Number(time[i]) - Number(time[i - 1]);
+    if (Number.isFinite(delta) && delta > 0 && delta < 1) deltas.push(delta);
+  }
+  deltas.sort((a, b) => a - b);
+  const gapThreshold = Math.max(0.5, (deltas[Math.floor(deltas.length / 2)] || 0) * 20);
+  const captures = [];
+  function addCapture(first, end) {
+    captures.push({ first, end, length: time.length,
+      startOffset: Number(time[first]), endOffset: Number(time[end - 1]),
+      startMs: base + Number(time[first]) * 1000, endMs: base + Number(time[end - 1]) * 1000 });
+  }
+  let first = 0;
+  for (let i = 1; i < time.length; i++) {
+    if (Number(time[i]) - Number(time[i - 1]) > gapThreshold) {
+      addCapture(first, i); first = i;
+    }
+  }
+  addCapture(first, time.length);
+  return captures;
+}
+
+function fitOscCaptureRange() {
+  const capture = oscCaptures[Number(document.getElementById('oscCapture').value)];
+  if (!capture) return;
+  document.getElementById('rangeStart').value = localDateInputValue(Math.floor(capture.startMs / 1000) * 1000);
+  document.getElementById('rangeEnd').value = localDateInputValue(Math.ceil(capture.endMs / 1000) * 1000);
+}
+
+function selectOscCapture() {
+  fitOscCaptureRange();
+  updateAnalysisView();
+}
+
+function oscCapturePoints(item, capture) {
+  const time = itemTimeAxis(item);
+  if (!time || !capture) return [];
+  const range = currentDataRange();
+  const points = [];
+  if (time.values.length === capture.length) {
+    for (let i = capture.first; i < capture.end; i++) {
+      const x = absoluteSampleTime(item, i, time), y = item.series.values[i];
+      if (x !== null && Number.isFinite(y) && overlapsDataRange({ start: x, end: x }, range)) points.push({ x, y });
+    }
+  } else {
+    forEachTimedValue(item, (x, y) => points.push({ x, y }),
+      { start: Math.max(capture.startMs - 0.001, range.start ?? -Infinity),
+        end: Math.min(capture.endMs + 0.001, range.end ?? Infinity), invalid: range.invalid });
+  }
+  return points;
 }
 function updateFaultChannels() {
   const target = document.getElementById('faultChannels'); target.innerHTML = '';
@@ -707,6 +810,171 @@ function updateFaultChannels() {
     label.append(input, document.createTextNode(` ${item.channel.name} · ${item.label} [${item.series.units}] `)); target.appendChild(label);
   });
 }
+
+function renderOscDiagram(container) {
+  document.getElementById('seriesPanel').style.display = 'none';
+  const selected = document.getElementById('faultRecord').value;
+  if (selected === '') { container.textContent = 'No OSC waveform recordings in this file.'; return; }
+  const observation = LOGICAL.observations[Number(selected)];
+  const capture = oscCaptures[Number(document.getElementById('oscCapture').value)];
+  if (!capture) { container.textContent = 'No timed OSC capture is available in this recording.'; return; }
+  if (!overlapsDataRange({ start: capture.startMs, end: capture.endMs })) {
+    container.textContent = 'Selected OSC capture is outside the date range. Choose another capture or change the dates.';
+    return;
+  }
+  const checked = new Set(Array.from(document.querySelectorAll('#faultChannels input:checked'), input => input.value));
+  const items = faultItems().filter(item => checked.has(String(item.id)) && electricalSeriesKind(item) === 'WaveForm');
+  const source = items.map(item => ({ item, points: oscCapturePoints(item, capture) })).filter(trace => trace.points.length);
+  if (!source.length) { container.textContent = 'No selected waveform samples in this date range.'; return; }
+
+  const parsedTrigger = Date.parse(observation.timeTriggered || '');
+  const validTrigger = Number.isFinite(parsedTrigger) &&
+    parsedTrigger >= capture.startMs - 1000 && parsedTrigger <= capture.endMs + 1000 ? parsedTrigger : NaN;
+  const observationStart = observationStartMs(observation);
+  const hasEventReference = capture.startOffset < 0 && capture.endOffset > 0;
+  const origin = Number.isFinite(validTrigger) ? validTrigger :
+    hasEventReference && observationStart !== null ? observationStart : capture.startMs;
+  const hasZeroReference = Number.isFinite(validTrigger) || hasEventReference;
+  const phases = { AN: '1', BN: '2', CN: '3', NG: 'N', AB: '12', BC: '23', CA: '31' };
+  const displayName = item => {
+    const phase = String(item.channel.phase || '').toUpperCase();
+    if (item.series.units === 'Amps') return phases[phase] ? `I${phases[phase]}` : item.channel.name;
+    const linePair = item.channel.name.match(/(?:^|[^\d])(12|23|31)(?:$|[^\d])/);
+    if (linePair) return `UL${linePair[1]}`;
+    if (phase === 'NG') return 'U(N-G)';
+    if (['AN', 'BN', 'CN'].includes(phase)) return `UL${phases[phase]}N`;
+    if (['AB', 'BC', 'CA'].includes(phase)) return `UL${phases[phase]}`;
+    return item.channel.name;
+  };
+  const color = ['#ff8300', '#48c557', '#987ac9', '#e58a82'];
+  const traces = source.map(({ item, points }) => ({
+    item, label: displayName(item), originalName: item.channel.name, unit: item.series.units === 'Amps' ? 'A' : 'V',
+    points: points.map(point => ({ x: point.x - origin, y: point.y })), nominal: Number(item.series.nominalQuantity) || 0
+  }));
+  const lineNeutral = traces.filter(trace => trace.unit === 'V' && !['AB', 'BC', 'CA'].includes(String(trace.item.channel.phase).toUpperCase()) &&
+    !/^(?:UL?|SS_WF_U)(?:12|23|31)$/.test(trace.item.channel.name));
+  const lineLine = traces.filter(trace => trace.unit === 'V' && !lineNeutral.includes(trace));
+  const current = traces.filter(trace => trace.unit === 'A');
+  if (!lineLine.length) {
+    const byPhase = Object.fromEntries(lineNeutral.map(trace => [String(trace.item.channel.phase).toUpperCase(), trace]));
+    for (const [a, b, label] of [['AN', 'BN', 'UL12'], ['BN', 'CN', 'UL23'], ['CN', 'AN', 'UL31']]) {
+      if (!byPhase[a] || !byPhase[b]) continue;
+      const second = new Map(byPhase[b].points.map(point => [point.x, point.y]));
+      const points = byPhase[a].points.filter(point => second.has(point.x))
+        .map(point => ({ x: point.x, y: point.y - second.get(point.x) }));
+      if (points.length) lineLine.push({ label: `${label} (derived)`, originalName: `${byPhase[a].originalName} − ${byPhase[b].originalName}`,
+        unit: 'V', points, nominal: 0 });
+    }
+  }
+  const groups = [
+    { title: 'Line-neutral voltage', unit: 'V', traces: lineNeutral },
+    { title: 'Line-line voltage', unit: 'V', traces: lineLine },
+    { title: 'Current', unit: 'A', traces: current }
+  ].filter(group => group.traces.length);
+  const all = groups.flatMap(group => group.traces);
+  const minX = Math.min(...all.map(trace => trace.points[0].x));
+  const maxX = Math.max(...all.map(trace => trace.points[trace.points.length - 1].x));
+  const niceStep = value => {
+    if (!Number.isFinite(value) || value <= 0) return 1;
+    const scale = 10 ** Math.floor(Math.log10(value));
+    return [1, 2, 2.5, 5, 10].map(n => n * scale).find(n => n >= value) || 10 * scale;
+  };
+  const tickInterval = niceStep((maxX - minX) / 5);
+  const axisMin = Math.floor(minX / tickInterval) * tickInterval;
+  const axisMax = Math.ceil(maxX / tickInterval) * tickInterval;
+  const panelWidth = Math.max(600, ((axisMax - axisMin) / tickInterval + 1) * 64);
+  const heading = document.createElement('div'); heading.className = 'osc-heading'; container.appendChild(heading);
+  const title = document.createElement('h2'); title.textContent = `${observation.dataSource?.name || 'PQDIF device'} · ${observation.name}`; heading.appendChild(title);
+  const timing = document.createElement('p');
+  timing.textContent = `Capture ${Number(document.getElementById('oscCapture').value) + 1}/${oscCaptures.length} · ` +
+    `${new Date(origin + minX).toLocaleString()} – ${new Date(origin + maxX).toLocaleString()} · ${hasZeroReference ?
+      (Number.isFinite(validTrigger) ? 'Recorded trigger' : 'Event time reference (t = 0)') : '0 ms = capture start'}`;
+  heading.appendChild(timing);
+  const board = document.createElement('div'); board.className = 'fault-board osc-board'; container.appendChild(board);
+  const legend = document.createElement('aside'); legend.className = 'fault-legend'; board.appendChild(legend);
+  const panels = document.createElement('div'); panels.className = 'fault-panels'; board.appendChild(panels);
+  const charts = [];
+  const referenceLine = { id: 'oscReferenceLine', afterDraw(chart) {
+    if (!hasZeroReference) return;
+    const x = chart.scales.x.getPixelForValue(0), area = chart.chartArea;
+    if (x < area.left || x > area.right) return;
+    chart.ctx.save(); chart.ctx.strokeStyle = '#dedede'; chart.ctx.lineWidth = 1;
+    chart.ctx.beginPath(); chart.ctx.moveTo(x, area.top); chart.ctx.lineTo(x, area.bottom); chart.ctx.stroke(); chart.ctx.restore();
+  } };
+  groups.forEach((group, panelIndex) => {
+    const largestMagnitude = group.traces.reduce((largest, trace) =>
+      trace.points.reduce((value, point) => Math.max(value, Math.abs(point.y)), largest), 0);
+    const radius = niceStep(largestMagnitude);
+    const datasets = group.traces.map((trace, i) => ({
+      label: trace.label, data: trace.points, borderColor: color[i % color.length],
+      backgroundColor: color[i % color.length], borderWidth: 1.4, pointRadius: 0, tension: 0
+    }));
+    const options = numericOptions(hasZeroReference ? 'Time relative to event (ms)' : 'Time from capture start (ms)', group.unit);
+    options.animation = false;
+    options.scales.x.min = axisMin; options.scales.x.max = axisMax;
+    options.scales.x.ticks.stepSize = tickInterval;
+    options.scales.x.ticks.autoSkip = false;
+    options.scales.x.ticks.maxRotation = 0;
+    options.scales.x.ticks.callback = value => `${Number(value).toFixed(0)} ms`;
+    options.scales.x.ticks.display = panelIndex === groups.length - 1;
+    options.scales.x.title.display = panelIndex === groups.length - 1;
+    options.scales.y.min = -radius; options.scales.y.max = radius;
+    options.scales.y.ticks = { ...options.scales.y.ticks, stepSize: radius,
+      callback: value => `${Number(value).toLocaleString()} ${group.unit}` };
+    options.scales.y.afterFit = axis => { axis.width = 85; };
+    options.plugins.legend.display = false;
+    options.plugins.zoom.zoom.mode = 'x'; options.plugins.zoom.pan.mode = 'x';
+    options.plugins.tooltip.callbacks.title = entries => {
+      const offset = entries[0]?.parsed.x ?? 0;
+      return `${offset.toFixed(3)} ms · ${new Date(origin + offset).toLocaleString()}`;
+    };
+    const panel = document.createElement('div'); panel.className = 'fault-panel osc-panel';
+    panel.style.minWidth = `${panelWidth}px`; panels.appendChild(panel);
+    const canvas = document.createElement('canvas'); panel.appendChild(canvas);
+    const chart = new Chart(canvas, { type: 'line', data: { datasets }, options, plugins: [referenceLine] });
+    charts.push(chart); activeCharts.push(chart);
+    const groupLabel = document.createElement('h4'); groupLabel.textContent = `${group.title} [${group.unit}]`; legend.appendChild(groupLabel);
+    group.traces.forEach((trace, i) => {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = trace.label;
+      button.title = trace.originalName; button.style.color = color[i % color.length]; button.setAttribute('aria-pressed', 'true');
+      button.addEventListener('click', () => {
+        const visible = chart.isDatasetVisible(i); chart.setDatasetVisibility(i, !visible);
+        button.setAttribute('aria-pressed', String(!visible)); button.style.opacity = visible ? '0.4' : '1'; chart.update('none');
+      });
+      legend.appendChild(button);
+    });
+  });
+  const synchronize = ({ chart }) => charts.forEach(other => {
+    if (other === chart) return;
+    other.options.scales.x.min = chart.scales.x.min; other.options.scales.x.max = chart.scales.x.max; other.update('none');
+  });
+  charts.forEach(chart => { chart.options.plugins.zoom.zoom.onZoom = synchronize; chart.options.plugins.zoom.pan.onPan = synchronize; });
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset zoom';
+  reset.addEventListener('click', () => charts.forEach(chart => {
+    chart.resetZoom(); chart.options.scales.x.min = axisMin; chart.options.scales.x.max = axisMax; chart.update('none');
+  })); container.appendChild(reset);
+
+  const table = document.createElement('table'); table.className = 'osc-summary'; container.appendChild(table);
+  const header = document.createElement('tr');
+  ['Group', 'Channel', 'Min', '%', 'Max', '%'].forEach(value => {
+    const cell = document.createElement('th'); cell.textContent = value; header.appendChild(cell);
+  }); table.appendChild(header);
+  groups.forEach(group => group.traces.forEach(trace => {
+    const { min, max } = trace.points.reduce((limits, point) => ({
+      min: Math.min(limits.min, point.y), max: Math.max(limits.max, point.y)
+    }), { min: Infinity, max: -Infinity });
+    const percentage = value => trace.nominal > 0 ? `${(100 * value / trace.nominal).toFixed(1)}%` : '—';
+    const row = document.createElement('tr');
+    [group.title, trace.label, `${min.toFixed(2)} ${trace.unit}`, percentage(min),
+      `${max.toFixed(2)} ${trace.unit}`, percentage(max)].forEach(value => {
+      const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell);
+    }); table.appendChild(row);
+  }));
+  const note = document.createElement('p'); note.className = 'series-note';
+  note.textContent = 'Line-line traces marked derived subtract synchronized phase waveforms. Percentages require a recorded nominal value. Recording length is not fault duration.';
+  container.appendChild(note);
+}
+
 function renderFaultRecord(container) {
   document.getElementById('seriesPanel').style.display = 'none';
   const value = document.getElementById('faultRecord').value;

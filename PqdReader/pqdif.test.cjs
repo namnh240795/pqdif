@@ -78,6 +78,15 @@ test('viewer loads the shared library, prepares every observation, and exports m
   assert.match(document.getElementById('meta').textContent, /29 observations/);
   assert.equal(document.getElementById('chartType').value, 'level-time', 'Level Time Diagram is the default analysis');
   assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(LOGICAL)', context)), expected);
+  context.segmentedObservation = {
+    startTime: '2025-01-01T00:00:00',
+    channels: [{ quantityTypeName: 'WaveForm', series: [{
+      valueType: expected.observations[20].channels[8].series[0].valueType,
+      values: [0, 0.001, 0.002, 5, 5.001]
+    }] }]
+  };
+  assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(oscCaptureSegments(segmentedObservation).map(c => [c.first, c.end]))', context)),
+    [[0, 3], [3, 5]], 'large gaps in a waveform observation become separate captures');
   const initialEnd = new Date(document.getElementById('rangeEnd').value).getTime();
   vm.runInContext(`document.getElementById('rangeStart').value = localDateInputValue(${initialEnd - 14 * 24 * 60 * 60 * 1000}); updateAnalysisView('start')`, context);
   assert.equal(new Date(document.getElementById('rangeEnd').value).getTime() -
@@ -88,6 +97,28 @@ test('viewer loads the shared library, prepares every observation, and exports m
     document.getElementById('chartType').value = type;
     const priorChartCount = charts.length;
     vm.runInContext('updateAnalysisView()', context);
+    if (type === 'osc') {
+      const oscCharts = charts.slice(priorChartCount);
+      assert.deepStrictEqual(oscCharts.map(chart => chart.config.data.datasets.length), [4, 3, 4],
+        'OSC stacks line-neutral voltage, derived line-line voltage and current');
+      const waveforms = expected.observations[20].channels;
+      const u1 = waveforms.find(channel => channel.name === 'SS_WF_U1').series[1].values;
+      const u2 = waveforms.find(channel => channel.name === 'SS_WF_U2').series[1].values;
+      assert.deepStrictEqual(Array.from(oscCharts[0].config.data.datasets[0].data, point => point.y), u1);
+      assert.equal(oscCharts[1].config.data.datasets[0].data[0].y, u1[0] - u2[0]);
+      assert.ok(oscCharts[0].config.data.datasets[0].data[0].x < 0,
+        'OSC time is relative to the recorded event reference');
+      for (const chart of oscCharts) {
+        assert.equal(chart.options.scales.y.min, -chart.options.scales.y.max,
+          'every OSC panel uses a symmetric zero-centered Y axis');
+        assert.equal(chart.options.scales.x.ticks.callback(-100), '-100 ms');
+        assert.equal(chart.options.scales.x.ticks.stepSize, 500,
+          'the 2.5-second sample uses half-second ticks');
+        assert.equal(chart.options.scales.x.ticks.autoSkip, false);
+        assert.ok(Number.isInteger(chart.options.scales.x.min / 500));
+        assert.ok(Number.isInteger(chart.options.scales.x.max / 500));
+      }
+    }
     if (type === 'itic') {
       const eventCharts = charts.slice(priorChartCount);
       assert.equal(eventCharts.length, 1, 'ITIC should render one voltage-duration diagram');
