@@ -145,7 +145,7 @@
     <label for="faultRecord">Fault recording</label>
     <select id="faultRecord" onchange="selectFaultRecord()"></select>
     <div id="oscCaptureControl" style="display:none">
-      <label for="oscCapture">OSC capture</label>
+      <label for="oscCapture">Recording capture</label>
       <select id="oscCapture" onchange="selectOscCapture()"></select>
     </div>
     <label for="faultMode">Recording type</label>
@@ -511,7 +511,9 @@ function resetDataRange() {
 
 function matchesChart(item, type) {
   if (type === 'itic') return true;
-  if (['fault-record','trms'].includes(type)) return isEventObservation(item.observation) && Boolean(electricalSeriesKind(item)) && (type !== 'trms' || electricalSeriesKind(item) === 'RMS');
+  if (['fault-record','trms'].includes(type)) return Boolean(electricalSeriesKind(item)) &&
+    (isEventObservation(item.observation) || /^TRMS\b/i.test(item.observation.name || '')) &&
+    (type !== 'trms' || electricalSeriesKind(item) === 'RMS');
   const quantity = (item.channel.quantityTypeName || '').toLowerCase();
   if (type === 'level-time') return isLevelTimeSeries(item);
   if (type === 'osc') return quantity === 'waveform';
@@ -681,15 +683,18 @@ function renderCharts() {
 let faultViewActive = false;
 let nonFaultRange = null;
 let oscCaptures = [];
+let faultPairedCaptures = [];
 function faultItems() {
   const oi = Number(document.getElementById('faultRecord').value);
   const kind = document.getElementById('faultMode').value;
-  return seriesCatalog.filter(item => item.oi === oi && (kind === 'combined' ? Boolean(electricalSeriesKind(item)) : electricalSeriesKind(item) === kind) &&
+  const paired = faultPairedCaptures.map(capture => capture.oi);
+  return seriesCatalog.filter(item => (item.oi === oi || paired.includes(item.oi)) &&
+    (kind === 'combined' ? Boolean(electricalSeriesKind(item)) : electricalSeriesKind(item) === kind) &&
     ['Volts', 'Amps', 'Hertz'].includes(item.series.units));
 }
 function updateFaultControls(type) {
   document.getElementById('faultControls').style.display = ['osc','fault-record','trms'].includes(type) ? 'block' : 'none';
-  document.getElementById('oscCaptureControl').style.display = type === 'osc' ? 'block' : 'none';
+  document.getElementById('oscCaptureControl').style.display = ['osc','fault-record','trms'].includes(type) ? 'block' : 'none';
   if (!['osc','fault-record','trms'].includes(type)) {
     if (faultViewActive && nonFaultRange) {
       document.getElementById('rangeStart').value = nonFaultRange.start;
@@ -698,6 +703,7 @@ function updateFaultControls(type) {
     faultViewActive = false;
     nonFaultRange = null;
     oscCaptures = [];
+    faultPairedCaptures = [];
     return;
   }
   if (faultViewActive === type) return;
@@ -710,7 +716,7 @@ function updateFaultControls(type) {
   document.getElementById('faultMode').disabled = type === 'trms' || type === 'osc';
   const select = document.getElementById('faultRecord'); select.innerHTML = '';
   LOGICAL.observations.forEach((obs, oi) => {
-    if (!isEventObservation(obs) || !seriesCatalog.some(item => item.oi === oi && electricalSeriesKind(item) &&
+    if (!(isEventObservation(obs) || /^TRMS\b/i.test(obs.name || '')) || !seriesCatalog.some(item => item.oi === oi && electricalSeriesKind(item) &&
       (type === 'trms' ? electricalSeriesKind(item) === 'RMS' : type === 'osc' ? electricalSeriesKind(item) === 'WaveForm' : true))) return;
     const option = document.createElement('option'); option.value = oi; option.textContent = obs.name; select.appendChild(option);
   });
@@ -720,32 +726,38 @@ function updateFaultControls(type) {
 function selectFaultRecord(render = true) {
   const value = document.getElementById('faultRecord').value;
   const items = value === '' ? [] : seriesCatalog.filter(item => item.oi === Number(value));
-  const bounds = items.map(item => item.timeBounds).filter(Boolean);
-  if (bounds.length) {
-    document.getElementById('rangeStart').value = localDateInputValue(Math.floor(Math.min(...bounds.map(b => b.start)) / 1000) * 1000);
-    document.getElementById('rangeEnd').value = localDateInputValue(Math.ceil(Math.max(...bounds.map(b => b.end)) / 1000) * 1000);
-  }
   const mode = document.getElementById('faultMode');
-  for (const option of mode.options) option.disabled = !items.some(item => option.value === 'combined' ? Boolean(electricalSeriesKind(item)) : electricalSeriesKind(item) === option.value);
-  if (mode.selectedOptions[0]?.disabled) mode.value = Array.from(mode.options).find(o => !o.disabled)?.value || 'WaveForm';
-  if (document.getElementById('chartType').value === 'osc') {
-    oscCaptures = value === '' ? [] : oscCaptureSegments(LOGICAL.observations[Number(value)]);
-    const select = document.getElementById('oscCapture'); select.innerHTML = '';
-    oscCaptures.forEach((capture, index) => {
-      const option = document.createElement('option'); option.value = index;
-      option.textContent = `Capture ${index + 1} · ${new Date(capture.startMs).toLocaleString()} · ${((capture.endMs - capture.startMs)).toFixed(1)} ms`;
-      select.appendChild(option);
-    });
-    select.value = oscCaptures.length ? String(oscCaptures.length - 1) : '';
-    fitOscCaptureRange();
-  }
+  const primaryKind = document.getElementById('chartType').value === 'trms' ? 'RMS' :
+    items.some(item => electricalSeriesKind(item) === 'WaveForm') ? 'WaveForm' : 'RMS';
+  oscCaptures = value === '' ? [] : observationCaptureSegments(LOGICAL.observations[Number(value)], primaryKind)
+    .map(capture => ({ ...capture, oi: Number(value), kind: primaryKind }));
+  const select = document.getElementById('oscCapture'); select.innerHTML = '';
+  oscCaptures.forEach((capture, index) => {
+    const option = document.createElement('option'); option.value = index;
+    option.textContent = `Capture ${index + 1} · ${new Date(capture.startMs).toLocaleString()} · ${(capture.endMs - capture.startMs).toFixed(1)} ms`;
+    select.appendChild(option);
+  });
+  select.value = oscCaptures.length ? String(oscCaptures.length - 1) : '';
+  updatePairedFaultCaptures();
+  const available = new Set([...items.map(electricalSeriesKind), ...faultPairedCaptures.map(capture => capture.kind)]);
+  for (const option of mode.options) option.disabled = option.value === 'combined'
+    ? available.size === 0 : !available.has(option.value);
+  if (document.getElementById('chartType').value === 'fault-record' && faultPairedCaptures.length) mode.value = 'combined';
+  else if (mode.selectedOptions[0]?.disabled) mode.value = Array.from(mode.options).find(option => !option.disabled)?.value || 'WaveForm';
+  fitOscCaptureRange();
   updateFaultChannels();
   if (render) updateAnalysisView();
 }
 
 function oscCaptureSegments(observation) {
-  const channel = observation.channels.find(item => item.quantityTypeName === 'WaveForm' &&
-    item.series.some(isTimeSeries));
+  return observationCaptureSegments(observation, 'WaveForm');
+}
+
+function observationCaptureSegments(observation, kind) {
+  const channel = observation.channels.find(item => item.series.some(isTimeSeries) &&
+    (kind === 'WaveForm' ? item.quantityTypeName === 'WaveForm' :
+      item.quantityTypeName === 'RMS' || item.quantityTypeName === 'Phasor' && /^TRMS\b/i.test(observation.name || '') ||
+      item.name.startsWith('SS_RMS_')));
   const time = channel?.series.find(isTimeSeries)?.values;
   const base = observationStartMs(observation);
   if (!time?.length || base === null) return [];
@@ -775,13 +787,44 @@ function oscCaptureSegments(observation) {
 function fitOscCaptureRange() {
   const capture = oscCaptures[Number(document.getElementById('oscCapture').value)];
   if (!capture) return;
-  document.getElementById('rangeStart').value = localDateInputValue(Math.floor(capture.startMs / 1000) * 1000);
-  document.getElementById('rangeEnd').value = localDateInputValue(Math.ceil(capture.endMs / 1000) * 1000);
+  const related = document.getElementById('chartType').value === 'fault-record' ? faultPairedCaptures : [];
+  const start = Math.min(capture.startMs, ...related.map(item => item.startMs));
+  const end = Math.max(capture.endMs, ...related.map(item => item.endMs));
+  document.getElementById('rangeStart').value = localDateInputValue(Math.floor(start / 1000) * 1000);
+  document.getElementById('rangeEnd').value = localDateInputValue(Math.ceil(end / 1000) * 1000);
 }
 
 function selectOscCapture() {
+  updatePairedFaultCaptures();
+  const mode = document.getElementById('faultMode');
+  const selected = oscCaptures[Number(document.getElementById('oscCapture').value)];
+  const available = new Set([selected?.kind, ...faultPairedCaptures.map(capture => capture.kind)]);
+  for (const option of mode.options) option.disabled = option.value === 'combined'
+    ? !selected : !available.has(option.value);
+  if (mode.selectedOptions[0]?.disabled) mode.value = selected?.kind || 'WaveForm';
   fitOscCaptureRange();
+  updateFaultChannels();
   updateAnalysisView();
+}
+
+function updatePairedFaultCaptures() {
+  faultPairedCaptures = [];
+  if (!['fault-record', 'trms'].includes(document.getElementById('chartType').value)) return;
+  const selected = oscCaptures[Number(document.getElementById('oscCapture').value)];
+  if (!selected) return;
+  const otherKind = selected.kind === 'WaveForm' ? 'RMS' : 'WaveForm';
+  const source = LOGICAL.observations[selected.oi]?.dataSource?.name;
+  const candidates = LOGICAL.observations.flatMap((observation, oi) => {
+    if (source && observation.dataSource?.name !== source) return [];
+    return observationCaptureSegments(observation, otherKind).map(capture => ({ ...capture, oi, kind: otherKind }));
+  });
+  const nearby = candidates.filter(capture => capture.startMs <= selected.endMs + 5000 &&
+    capture.endMs >= selected.startMs - 5000);
+  if (!nearby.length) return;
+  const center = (selected.startMs + selected.endMs) / 2;
+  nearby.sort((a, b) => Math.abs((a.startMs + a.endMs) / 2 - center) -
+    Math.abs((b.startMs + b.endMs) / 2 - center));
+  faultPairedCaptures = [nearby[0]];
 }
 
 function oscCapturePoints(item, capture) {
@@ -977,67 +1020,150 @@ function renderOscDiagram(container) {
 
 function renderFaultRecord(container) {
   document.getElementById('seriesPanel').style.display = 'none';
-  const value = document.getElementById('faultRecord').value;
-  if (value === '') { container.textContent = 'No fault recordings with waveform or RMS data in this file.'; return; }
+  const selected = document.getElementById('faultRecord').value;
+  if (selected === '') { container.textContent = 'No fault recordings with waveform or RMS data in this file.'; return; }
   const range = currentDataRange();
   if (range.invalid) { container.textContent = 'Start time must be earlier than or equal to end time.'; return; }
-  const obs = LOGICAL.observations[Number(value)];
+  const capture = oscCaptures[Number(document.getElementById('oscCapture').value)];
+  if (!capture) { container.textContent = 'No timed capture is available in this recording.'; return; }
   const checked = new Set(Array.from(document.querySelectorAll('#faultChannels input:checked'), input => input.value));
-  const items = faultItems().filter(item => checked.has(String(item.id)));
-  const heading = document.createElement('h3'); heading.textContent = obs.name; container.appendChild(heading);
-  const note = document.createElement('p');
-  const trigger = obs.timeTriggered && !obs.timeTriggered.startsWith('0001-') ? obs.timeTriggered : null;
-  note.textContent = `Trigger method: ${obs.triggerMethod || 'unavailable'} · Trigger time: ${trigger || 'not recorded'} · ${document.getElementById('faultMode').value}. Times use the file observation and recorded sample offsets.`;
-  container.appendChild(note);
-  const prepared = items.map(item => ({item, points:rawTimedPoints(item)})).filter(entry => entry.points.length);
-  if (!prepared.length) { container.appendChild(document.createTextNode('No selected channel samples in this date range.')); return; }
-  const start = Math.min(...prepared.map(e => e.points[0].x));
-  const end = Math.max(...prepared.map(e => e.points[e.points.length - 1].x));
-  const board = document.createElement('div'); board.className = 'fault-board'; container.appendChild(board);
+  const prepared = faultItems().filter(item => checked.has(String(item.id))).flatMap(item => {
+    const segment = [capture, ...faultPairedCaptures].find(candidate =>
+      candidate.oi === item.oi && candidate.kind === electricalSeriesKind(item));
+    if (!segment) return [];
+    const points = oscCapturePoints(item, segment);
+    return points.length ? [{ item, points }] : [];
+  });
+  if (!prepared.length) { container.textContent = 'No selected channel samples in this capture and date range.'; return; }
+  const observation = LOGICAL.observations[Number(selected)];
+  const trigger = Date.parse(observation.timeTriggered || '');
+  const validTrigger = Number.isFinite(trigger) && trigger >= capture.startMs - 1000 && trigger <= capture.endMs + 1000;
+  const eventReference = capture.startOffset < 0 && capture.endOffset > 0;
+  const pairedOsc = document.getElementById('chartType').value === 'trms'
+    ? faultPairedCaptures.find(candidate => candidate.kind === 'WaveForm') : null;
+  const origin = validTrigger ? trigger : eventReference ? observationStartMs(observation) :
+    pairedOsc?.startMs ?? capture.startMs;
+  const first = Math.min(...prepared.map(entry => entry.points[0].x - origin));
+  const last = Math.max(...prepared.map(entry => entry.points.at(-1).x - origin));
+  const niceStep = value => {
+    if (!Number.isFinite(value) || value <= 0) return 1;
+    const scale = 10 ** Math.floor(Math.log10(value));
+    return [1, 2, 2.5, 5, 10].map(n => n * scale).find(n => n >= value) || 10 * scale;
+  };
+  const tick = niceStep((last - first) / 5);
+  const axisMin = Math.floor(first / tick) * tick;
+  const axisMax = Math.ceil(last / tick) * tick || tick;
+  const formatTime = value => Math.abs(value) >= 1000 && tick >= 1000
+    ? `${(value / 1000).toFixed(value % 1000 ? 1 : 0)} s` : `${Number(value.toFixed(2))} ms`;
+  const heading = document.createElement('div'); heading.className = 'osc-heading'; container.appendChild(heading);
+  const title = document.createElement('h2');
+  title.textContent = `${observation.dataSource?.name || 'PQDIF device'} · Fault Record ${Number(document.getElementById('oscCapture').value) + 1}/${oscCaptures.length}`;
+  heading.appendChild(title);
+  const detail = document.createElement('p');
+  detail.textContent = `${new Date(origin + first).toLocaleString()} – ${new Date(origin + last).toLocaleString()} · ` +
+    `${validTrigger ? '0 = recorded trigger' : eventReference ? '0 = event time reference' : pairedOsc ? '0 = paired OSC capture start' : '0 = capture start'} · ` +
+    `${document.getElementById('faultMode').value === 'combined' && faultPairedCaptures.length ? 'OSC + TRMS' : document.getElementById('faultMode').value}`;
+  heading.appendChild(detail);
+  const board = document.createElement('div'); board.className = 'fault-board osc-board'; container.appendChild(board);
   const legend = document.createElement('aside'); legend.className = 'fault-legend'; board.appendChild(legend);
   const panels = document.createElement('div'); panels.className = 'fault-panels'; board.appendChild(panels);
-  const reset = document.createElement('button'); reset.textContent = 'Reset all zoom'; container.appendChild(reset);
-  reset.addEventListener('click', () => activeCharts.forEach(chart => { chart.resetZoom(); chart.options.scales.x.min = start; chart.options.scales.x.max = end; chart.update('none'); }));
-  const colors = ['#ffb33b','#84bc69','#ad8ed5','#e49588'];
-  const panelGroup = item => item.series.units === 'Hertz' ? 'Frequency' : electricalQuantity(item) === 'I' ? 'Current' : /^(?:UL?|SS_RMS_U|SS_WF_U)(12|23|31)$/.test(item.channel.name) ? 'Line-line voltage' : 'Voltage';
-  for (const kind of ['WaveForm','RMS']) for (const title of ['Frequency','Voltage','Line-line voltage','Current']) {
-    const group = prepared.filter(e => panelGroup(e.item) === title && electricalSeriesKind(e.item) === kind);
-    if (!group.length) continue;
-    const unit = title === 'Current' ? 'A' : title === 'Frequency' ? 'Hz' : 'V';
-    const datasets = group.map((e, i) => ({label:e.item.channel.name + ' · ' + e.item.channel.phase + ' · ' + e.item.label,
-      data:e.points, borderColor:colors[i % colors.length], backgroundColor:colors[i % colors.length], pointRadius:0, borderWidth:1, tension:0}));
-    const options = numericOptions('Elapsed time from displayed recording start (ms)', unit);
-    options.scales.x.min = start; options.scales.x.max = end;
-    options.scales.x.ticks.callback = x => (x - start).toFixed(1);
-    options.plugins.tooltip.callbacks.title = entries => {
-      const x = entries[0]?.parsed.x; return `${new Date(x).toLocaleString()} · ${(x-start).toFixed(3)} ms`;
-    };
-    options.plugins.legend.display = false;
-    options.scales.y.afterFit = axis => { axis.width = 85; };
-    options.plugins.zoom.zoom.mode = 'x'; options.plugins.zoom.pan.mode = 'x';
-    const panel = document.createElement('div'); panel.className = 'fault-panel'; panels.appendChild(panel);
-    const canvas = document.createElement('canvas'); panel.appendChild(canvas);
-    const chart = new Chart(canvas, {type:'line',data:{datasets},options}); activeCharts.push(chart);
-    const groupLabel = document.createElement('h4'); groupLabel.textContent = `${kind === 'WaveForm' ? 'OSC' : 'RMS'} / ${title} [${unit}]`; legend.appendChild(groupLabel);
-    datasets.forEach((dataset, index) => {
-      const button = document.createElement('button'); button.type = 'button'; button.textContent = dataset.label;
-      button.style.color = dataset.borderColor; button.setAttribute('aria-pressed','true');
-      button.addEventListener('click', () => { const visible = chart.isDatasetVisible(index); chart.setDatasetVisibility(index,!visible); button.setAttribute('aria-pressed',String(!visible)); button.style.opacity = visible ? '0.4' : '1'; chart.update('none'); }); legend.appendChild(button);
-    });
+  const colors = ['#ff8300', '#48c557', '#987ac9', '#e58a82'];
+  const groupOf = item => item.series.units === 'Hertz' ? 'Frequency' : electricalQuantity(item) === 'I' ? 'Current' :
+    /(?:^|[^A-Za-z])U(?:L)?(?:12|23|31)(?:$|[^\d])/.test(item.channel.name) ? 'Line-line voltage' : 'Line-neutral voltage';
+  const groups = [];
+  const trmsOnly = document.getElementById('chartType').value === 'trms';
+  const layout = trmsOnly
+    ? [['RMS', 'Frequency'], ['RMS', 'Voltage'], ['RMS', 'Current']]
+    : ['WaveForm', 'RMS'].flatMap(kind =>
+      ['Line-neutral voltage', 'Line-line voltage', 'Current', 'Frequency'].map(name => [kind, name]));
+  for (const [kind, name] of layout) {
+    const entries = prepared.filter(entry => electricalSeriesKind(entry.item) === kind &&
+      (name === 'Voltage' ? groupOf(entry.item).includes('voltage') : groupOf(entry.item) === name));
+    if (entries.length) groups.push({ kind, name, entries, unit: name === 'Current' ? 'A' : name === 'Frequency' ? 'Hz' : 'V' });
   }
-  activeCharts.slice(0,-1).forEach(chart => { chart.options.scales.x.ticks.display = false; chart.options.scales.x.title.display = false; chart.update('none'); });
-  const sync = ({chart}) => activeCharts.forEach(other => { if (other !== chart) { other.options.scales.x.min = chart.scales.x.min; other.options.scales.x.max = chart.scales.x.max; other.update('none'); } });
-  activeCharts.forEach(chart => { chart.options.plugins.zoom.zoom.onZoom = sync; chart.options.plugins.zoom.pan.onPan = sync; });
-  const summary = document.createElement('p'); summary.textContent = `Displayed sample span: ${(end-start).toFixed(3)} ms. This is not the disturbance duration. Statistics include all selected samples in the date range.`; container.appendChild(summary);
-  const table = document.createElement('table');
+  const referenceLine = { id: 'faultCaptureReference', afterDraw(chart) {
+    const x = chart.scales.x.getPixelForValue(0), area = chart.chartArea;
+    if (x < area.left || x > area.right) return;
+    chart.ctx.save(); chart.ctx.strokeStyle = '#dedede'; chart.ctx.lineWidth = 1;
+    chart.ctx.beginPath(); chart.ctx.moveTo(x, area.top); chart.ctx.lineTo(x, area.bottom); chart.ctx.stroke(); chart.ctx.restore();
+  } };
+  const charts = [];
+  groups.forEach((group, panelIndex) => {
+    const datasets = group.entries.map(({ item, points }, index) => ({
+      label: `${item.channel.name} · ${item.channel.phase} · ${item.label}`,
+      data: points.map(point => ({ x: point.x - origin, y: point.y })),
+      borderColor: colors[index % colors.length], backgroundColor: colors[index % colors.length],
+      pointRadius: 0, borderWidth: 1.3, tension: 0
+    }));
+    const options = numericOptions('Time relative to recording (ms)', group.unit);
+    options.animation = false;
+    options.scales.x.min = axisMin; options.scales.x.max = axisMax;
+    options.scales.x.ticks.stepSize = tick; options.scales.x.ticks.autoSkip = false;
+    options.scales.x.ticks.maxRotation = 0; options.scales.x.ticks.callback = formatTime;
+    options.scales.x.ticks.display = panelIndex === groups.length - 1;
+    options.scales.x.title.display = panelIndex === groups.length - 1;
+    if (group.kind === 'WaveForm') {
+      const peak = niceStep(Math.max(...group.entries.map(entry =>
+        entry.points.reduce((value, point) => Math.max(value, Math.abs(point.y)), 0))));
+      options.scales.y.min = -peak; options.scales.y.max = peak;
+      options.scales.y.ticks.stepSize = peak;
+    }
+    options.scales.y.afterFit = axis => { axis.width = 85; };
+    options.plugins.legend.display = false;
+    options.plugins.zoom.zoom.mode = 'x'; options.plugins.zoom.pan.mode = 'x';
+    options.plugins.tooltip.callbacks.title = entries => {
+      const offset = entries[0]?.parsed.x ?? 0;
+      return `${formatTime(offset)} · ${new Date(origin + offset).toLocaleString()}`;
+    };
+    const panel = document.createElement('div'); panel.className = 'fault-panel osc-panel';
+    panel.style.minWidth = `${Math.max(600, ((axisMax - axisMin) / tick + 1) * 64)}px`;
+    panels.appendChild(panel);
+    const canvas = document.createElement('canvas'); panel.appendChild(canvas);
+    const chart = new Chart(canvas, { type: 'line', data: { datasets }, options, plugins: [referenceLine] });
+    charts.push(chart); activeCharts.push(chart);
+    const label = document.createElement('h4');
+    label.textContent = `${group.kind === 'WaveForm' ? 'OSC' : 'TRMS'} / ${group.name} [${group.unit}]`;
+    legend.appendChild(label);
+    datasets.forEach((dataset, index) => {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = group.entries[index].item.channel.name;
+      button.title = dataset.label; button.style.color = dataset.borderColor;
+      button.setAttribute('aria-pressed', 'true');
+      button.addEventListener('click', () => {
+        const visible = chart.isDatasetVisible(index); chart.setDatasetVisibility(index, !visible);
+        button.setAttribute('aria-pressed', String(!visible)); button.style.opacity = visible ? '0.4' : '1'; chart.update('none');
+      });
+      legend.appendChild(button);
+    });
+  });
+  const synchronize = ({ chart }) => charts.forEach(other => {
+    if (other === chart) return;
+    other.options.scales.x.min = chart.scales.x.min; other.options.scales.x.max = chart.scales.x.max; other.update('none');
+  });
+  charts.forEach(chart => { chart.options.plugins.zoom.zoom.onZoom = synchronize; chart.options.plugins.zoom.pan.onPan = synchronize; });
+  const reset = document.createElement('button'); reset.type = 'button'; reset.textContent = 'Reset all zoom';
+  reset.addEventListener('click', () => charts.forEach(chart => {
+    chart.resetZoom(); chart.options.scales.x.min = axisMin; chart.options.scales.x.max = axisMax; chart.update('none');
+  })); container.appendChild(reset);
+  const table = document.createElement('table'); table.className = 'osc-summary'; container.appendChild(table);
   const header = document.createElement('tr');
-  ['Channel','Series','Unit','Samples','Minimum','Maximum'].forEach(text => { const cell = document.createElement('th'); cell.textContent = text; header.appendChild(cell); }); table.appendChild(header);
-  prepared.forEach(({item, points}) => {
-    let min = Infinity, max = -Infinity;
-    points.forEach(p => { min = Math.min(min,p.y); max = Math.max(max,p.y); });
+  ['Recording', 'Channel', 'Samples', 'Minimum', 'Min %', 'Maximum', 'Max %'].forEach(value => {
+    const cell = document.createElement('th'); cell.textContent = value; header.appendChild(cell);
+  }); table.appendChild(header);
+  prepared.forEach(({ item, points }) => {
+    const minimum = points.reduce((value, point) => Math.min(value, point.y), Infinity);
+    const maximum = points.reduce((value, point) => Math.max(value, point.y), -Infinity);
+    const nominal = Number(item.series.nominalQuantity) || 0;
+    const percent = value => nominal > 0 ? `${(100 * value / nominal).toFixed(1)}%` : '—';
+    const unit = item.series.units === 'Amps' ? 'A' : item.series.units === 'Hertz' ? 'Hz' : 'V';
     const row = document.createElement('tr');
-    [item.channel.name,item.label,item.series.units,points.length,min.toFixed(5),max.toFixed(5)].forEach(text => { const cell = document.createElement('td'); cell.textContent = text; row.appendChild(cell); }); table.appendChild(row);
-  }); container.appendChild(table);
+    [electricalSeriesKind(item) === 'WaveForm' ? 'OSC' : 'TRMS', item.channel.name, points.length,
+      `${minimum.toFixed(2)} ${unit}`, percent(minimum), `${maximum.toFixed(2)} ${unit}`, percent(maximum)]
+      .forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
+    table.appendChild(row);
+  });
+  const note = document.createElement('p'); note.className = 'series-note';
+  note.textContent = 'The axis uses recorded sample offsets. Capture length is not fault duration; percentages require a recorded nominal value.';
+  container.appendChild(note);
 }
 
 function seriesPoints(item, type, rangeOverride = null) {
@@ -1200,7 +1326,8 @@ function electricalSeriesKind(item) {
   const valueType = String(item.series.valueTypeName || item.label || '').toLowerCase();
   const source = `${item.observation.name || ''} ${item.channel.name || ''} ${item.channel.quantityTypeName || ''} ${valueType}`.toLowerCase();
   if (source.includes('waveform') || source.includes('oscill')) return 'WaveForm';
-  if (source.includes('rms') || source.includes('steady state')) return 'RMS';
+  if (source.includes('rms') || source.includes('steady state') ||
+      (item.channel.quantityTypeName === 'Phasor' && /^TRMS\b/i.test(item.observation.name || ''))) return 'RMS';
   return null;
 }
 

@@ -87,6 +87,16 @@ test('viewer loads the shared library, prepares every observation, and exports m
   };
   assert.deepStrictEqual(JSON.parse(vm.runInContext('JSON.stringify(oscCaptureSegments(segmentedObservation).map(c => [c.first, c.end]))', context)),
     [[0, 3], [3, 5]], 'large gaps in a waveform observation become separate captures');
+  context.trmsObservation = { name: 'TRMS Recorder', startTime: '2025-01-01T00:00:00',
+    channels: [{ name: 'UL1N', quantityTypeName: 'Phasor', series: [
+      { valueTypeName: 'Time', values: [0, 0.01, 0.02, 10, 10.01] },
+      { valueTypeName: 'Value', units: 'Volts', values: [230, 229, 230, 231, 230] }
+    ] }] };
+  assert.deepStrictEqual(JSON.parse(vm.runInContext("JSON.stringify(observationCaptureSegments(trmsObservation, 'RMS').map(c => [c.first, c.end]))", context)),
+    [[0, 3], [3, 5]], 'TRMS Phasor samples are divided into individual captures');
+  context.trmsItem = { observation: context.trmsObservation, channel: context.trmsObservation.channels[0],
+    series: context.trmsObservation.channels[0].series[1], label: 'Value' };
+  assert.equal(vm.runInContext('electricalSeriesKind(trmsItem)', context), 'RMS');
   const initialEnd = new Date(document.getElementById('rangeEnd').value).getTime();
   vm.runInContext(`document.getElementById('rangeStart').value = localDateInputValue(${initialEnd - 14 * 24 * 60 * 60 * 1000}); updateAnalysisView('start')`, context);
   assert.equal(new Date(document.getElementById('rangeEnd').value).getTime() -
@@ -146,18 +156,19 @@ test('viewer loads the shared library, prepares every observation, and exports m
     vm.runInContext('updateAnalysisView()', context);
     assert.equal(document.getElementById('faultRecord').options.length, count);
     const faultCharts = charts.slice(first);
-    assert.equal(faultCharts.length, 2, 'recorded voltage and current get separate panels');
+    assert.equal(faultCharts.length, type === 'fault-record' ? 4 : 2,
+      'fault records show aligned OSC and TRMS panels; TRMS shows recorded voltage and current');
     const datasets = faultCharts.flatMap(chart => chart.config.data.datasets);
-    assert.equal(datasets.length, 8);
-    assert.ok(datasets.every(d => d.label.startsWith(prefix)));
+    assert.equal(datasets.length, type === 'fault-record' ? 16 : 8);
+    assert.ok(datasets.some(d => d.label.startsWith(prefix)));
     const record = expected.observations[20];
-    for (const dataset of datasets) {
+    for (const dataset of datasets.filter(d => d.label.startsWith(prefix))) {
       const channel = record.channels.find(c => dataset.label.startsWith(c.name + ' ·'));
       const source = channel.series.find(s => ['Volts','Amps'].includes(s.units));
       assert.deepStrictEqual(Array.from(dataset.data, p => p.y), source.values);
     }
-    assert.equal(faultCharts[0].options.scales.x.min, faultCharts[1].options.scales.x.min);
-    assert.equal(faultCharts[0].options.scales.x.max, faultCharts[1].options.scales.x.max);
+    assert.ok(faultCharts.every(chart => chart.options.scales.x.min === faultCharts[0].options.scales.x.min));
+    assert.ok(faultCharts.every(chart => chart.options.scales.x.max === faultCharts[0].options.scales.x.max));
   }
   document.getElementById('faultMode').children = ['WaveForm', 'RMS', 'combined'].map(value => ({value}));
   document.getElementById('chartType').value = 'fault-record';
