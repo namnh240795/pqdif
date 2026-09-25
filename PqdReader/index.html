@@ -241,7 +241,8 @@
   <h2 id="comtradeHeading">COMTRADE recording</h2>
   <div class="comtrade-actions">
     <button type="button" onclick="document.getElementById('fileInput').click()">Open another file</button>
-    <button type="button" onclick="resetComtradeZoom()">Reset zoom</button>
+    <button type="button" onclick="resetComtradeZoom()">Reset zoom · all diagrams</button>
+    <button type="button" onclick="showFullComtradeRecording()">Full recording</button>
   </div>
   <p id="standaloneComtradeStatus" aria-live="polite"></p>
   <div id="comtradeMetadata"></div>
@@ -1967,11 +1968,15 @@ async function readComtradeFiles(files) {
 }
 let standaloneComtrade = null;
 let standaloneComtradeCharts = [];
+let standaloneComtradeLegendButtons = [];
+let comtradeViewRange = 'default';
 async function loadStandaloneComtrade(files) {
   const recording = await readComtradeFiles(files);
   standaloneComtradeCharts.forEach(chart => chart.destroy());
   standaloneComtradeCharts = [];
+  standaloneComtradeLegendButtons = [];
   standaloneComtrade = recording;
+  comtradeViewRange = 'default';
   activeCharts.forEach(chart => chart.destroy()); activeCharts = [];
   document.getElementById('controls').style.display = 'none';
   document.getElementById('eventPanel').style.display = 'none';
@@ -2029,13 +2034,34 @@ function comtradeChannelGroup(channel) {
   return channel.unit || 'Other';
 }
 function resetComtradeZoom() {
-  standaloneComtradeCharts.forEach(chart => chart.resetZoom());
+  setComtradeViewRange('default');
+}
+function showFullComtradeRecording() {
+  setComtradeViewRange('full');
+}
+function setComtradeViewRange(range) {
+  if (!standaloneComtrade) return;
+  const hidden = standaloneComtradeCharts.map(chart => chart.config.data.datasets.map((_, index) =>
+    typeof chart.isDatasetVisible === 'function' && !chart.isDatasetVisible(index)));
+  comtradeViewRange = range;
+  renderStandaloneComtrade();
+  standaloneComtradeCharts.forEach((chart, panelIndex) => {
+    hidden[panelIndex]?.forEach((isHidden, index) => {
+      if (isHidden) {
+        chart.setDatasetVisibility(index, false);
+        const button = standaloneComtradeLegendButtons[panelIndex]?.[index];
+        if (button) { button.setAttribute('aria-pressed', 'false'); button.style.opacity = '0.4'; }
+      }
+    });
+    chart.update('none');
+  });
 }
 function renderStandaloneComtrade() {
   const recording = standaloneComtrade;
   if (!recording) return;
   standaloneComtradeCharts.forEach(chart => chart.destroy());
   standaloneComtradeCharts = [];
+  standaloneComtradeLegendButtons = [];
   const target = document.getElementById('comtradeCharts'); target.innerHTML = '';
   const summary = document.getElementById('comtradeSummary'); summary.innerHTML = '';
   const checked = new Set(Array.from(document.querySelectorAll('#comtradeChannels input:checked'), input => Number(input.value)));
@@ -2044,13 +2070,17 @@ function renderStandaloneComtrade() {
   const recorded = recording.channels.find(channel => channel.points.length);
   const first = recorded.points[0].x - recording.trigger;
   const last = recorded.points.at(-1).x - recording.trigger;
+  const viewSpan = Math.min(last - first, 500);
+  const viewStart = comtradeViewRange === 'full' ? first :
+    Math.max(first, Math.min(-viewSpan * 0.4, last - viewSpan));
+  const viewEnd = comtradeViewRange === 'full' ? last : viewStart + viewSpan;
   const niceStep = value => {
     const scale = 10 ** Math.floor(Math.log10(Math.max(value, 0.001)));
     return [1, 2, 2.5, 5, 10].map(n => n * scale).find(n => n >= value) || 10 * scale;
   };
-  const tick = niceStep((last - first) / 5);
-  const axisMin = Math.floor(first / tick) * tick;
-  const axisMax = Math.ceil(last / tick) * tick;
+  const tick = niceStep((viewEnd - viewStart) / 5);
+  const axisMin = Math.floor(viewStart / tick) * tick;
+  const axisMax = Math.ceil(viewEnd / tick) * tick;
   const board = document.createElement('div'); board.className = 'fault-board osc-board'; target.appendChild(board);
   const legend = document.createElement('aside'); legend.className = 'fault-legend'; board.appendChild(legend);
   const panels = document.createElement('div'); panels.className = 'fault-panels'; board.appendChild(panels);
@@ -2094,6 +2124,7 @@ function renderStandaloneComtrade() {
     const canvas = document.createElement('canvas'); panel.appendChild(canvas);
     const chart = new Chart(canvas, { type: 'line', data: { datasets }, options, plugins: [marker] });
     standaloneComtradeCharts.push(chart);
+    const legendButtons = []; standaloneComtradeLegendButtons.push(legendButtons);
     const label = document.createElement('h4'); label.textContent = `${group.name} [${unit}]`; legend.appendChild(label);
     datasets.forEach((dataset, index) => {
       const button = document.createElement('button'); button.type = 'button'; button.textContent = dataset.label;
@@ -2102,6 +2133,7 @@ function renderStandaloneComtrade() {
         const visible = chart.isDatasetVisible(index); chart.setDatasetVisibility(index, !visible);
         button.setAttribute('aria-pressed', String(!visible)); button.style.opacity = visible ? '0.4' : '1'; chart.update('none');
       }); legend.appendChild(button);
+      legendButtons.push(button);
     });
   });
   const synchronize = ({ chart }) => standaloneComtradeCharts.forEach(other => {

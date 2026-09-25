@@ -380,6 +380,22 @@ test('viewer loads the shared library, prepares every observation, and exports m
   assert.equal(vm.runInContext('standaloneComtrade.sampleCount', context), 2);
   assert.equal(vm.runInContext('standaloneComtradeCharts.length', context), 1);
   assert.deepStrictEqual(Array.from(vm.runInContext('standaloneComtradeCharts[0].config.data.datasets[0].data', context), point => point.x), [-1, 0]);
+  const beforeReset = charts.at(-1);
+  vm.runInContext('standaloneComtradeCharts[0].options.scales.x.min = -0.25; resetComtradeZoom()', context);
+  assert.equal(beforeReset.destroyed, true, 'reset replaces the zoomed chart');
+  assert.equal(vm.runInContext('standaloneComtradeCharts[0].options.scales.x.min', context), -1,
+    'reset restores the full trigger-relative range');
+  context.rangeRecording = { trigger: 200, channels: [{ name: 'U', unit: 'V', points: [
+    {x: 0, y: 1}, {x: 1000, y: -1}
+  ] }] };
+  vm.runInContext('standaloneComtrade = rangeRecording; renderStandaloneComtrade()', context);
+  assert.equal(vm.runInContext('standaloneComtradeCharts[0].options.scales.x.max', context), 300,
+    'a long COMTRADE recording starts with a 500 ms window');
+  vm.runInContext('showFullComtradeRecording()', context);
+  assert.equal(vm.runInContext('standaloneComtradeCharts[0].options.scales.x.max', context), 800);
+  vm.runInContext('resetComtradeZoom()', context);
+  assert.equal(vm.runInContext('standaloneComtradeCharts[0].options.scales.x.max', context), 300,
+    'reset returns to the initial window after showing the full recording');
   assert.throws(() => vm.runInContext("comtradeFileSet([{name:'a.cfg'},{name:'b.dat'}])", context), /matching/);
 });
 

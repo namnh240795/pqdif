@@ -44,7 +44,7 @@ Omit the output path to write JSON to stdout.
 
 `index.html` loads the same library as a classic script, exposes it as `Pqdif`, and calls `Pqdif.parsePqdif` when a file is selected. Open the viewer, choose a `.pqd` file, and click **Download JSON**. Parsing happens locally. The viewer loads pako and Chart.js from jsDelivr.
 
-The viewer also opens a COMTRADE recording without a PQDIF file: select or drop the matching `.cfg` and `.dat` files together, plus its optional `.hdr`. It plots the recorded analog channels by voltage and current, with time relative to the trigger, channel filters, synchronized zoom, and full-sample minimum/maximum statistics. When the HDR provides UTC timestamps, those take precedence over the CFG's device-local clock. COMTRADE files remain in the browser.
+The viewer also opens a COMTRADE recording without a PQDIF file: select or drop the matching `.cfg` and `.dat` files together, plus its optional `.hdr`. It plots the recorded analog channels by voltage and current, with time relative to the trigger, channel filters, synchronized zoom, and full-sample minimum/maximum statistics. The initial view spans 500 ms around the trigger when the recording is longer; **Full recording** shows the entire capture and **Reset zoom** restores the initial window on every panel. When the HDR provides UTC timestamps, those take precedence over the CFG's device-local clock. COMTRADE files remain in the browser.
 
 For another HTML page, copy `node_modules/pqdif/lib/pqdif.js` into your web assets (shown here as `./lib/pqdif.js`):
 
