@@ -115,13 +115,21 @@
 .osc-summary { width:100%; border-collapse:collapse; background:#282828; font-size:12px; }
 .osc-summary th, .osc-summary td { padding:6px 10px; border-bottom:1px solid #414141; text-align:left; }
 .osc-summary th { background:#333; }
+.comtrade-actions { display:flex; gap:8px; margin:12px 0; }
+.comtrade-actions button { background:#ff8300; color:#fff; border:0; padding:7px 12px; cursor:pointer; }
+#comtradeChannels { display:flex; flex-wrap:wrap; gap:8px 16px; margin:12px 0; }
+#comtradeChannels label { white-space:nowrap; font-size:12px; }
+#comtradeCharts { display:grid; gap:8px; }
+#comtradeCharts .fault-board { padding:0; }
+#comtradeSummary { overflow-x:auto; margin-top:12px; }
+#comtradeMetadata { font-size:12px; color:#c9c9c9; line-height:1.6; }
 @media(max-width:760px) { .fault-board { grid-template-columns:1fr; } .fault-legend { max-height:200px; overflow:auto; } }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>PQDIF File Analysis</h1>
+  <h1>PQDIF &amp; COMTRADE File Analysis</h1>
   <div class="meta" id="meta">Select a .pqd file to begin</div>
 </div>
 
@@ -223,16 +231,30 @@
 </div>
 
 <div id="dropZone" class="drop-zone">
-  <p>Drop a .pqd file here or click to browse</p>
-  <small>Reads PQDIF binary format directly in the browser</small>
-  <input type="file" accept=".pqd" id="fileInput" style="display:none">
+  <p>Drop a .pqd file or a COMTRADE .cfg + .dat + optional .hdr set here, or click to browse</p>
+  <small>Reads PQDIF and COMTRADE directly in this browser</small>
+  <p id="importStatus" role="status"></p>
+  <input type="file" accept=".pqd,.cfg,.dat,.hdr" multiple id="fileInput" style="display:none">
 </div>
+
+<section id="comtradeViewer" class="series-panel" style="display:none" aria-labelledby="comtradeHeading">
+  <h2 id="comtradeHeading">COMTRADE recording</h2>
+  <div class="comtrade-actions">
+    <button type="button" onclick="document.getElementById('fileInput').click()">Open another file</button>
+    <button type="button" onclick="resetComtradeZoom()">Reset zoom</button>
+  </div>
+  <p id="standaloneComtradeStatus" aria-live="polite"></p>
+  <div id="comtradeMetadata"></div>
+  <div id="comtradeChannels"></div>
+  <div id="comtradeCharts"></div>
+  <div id="comtradeSummary"></div>
+</section>
 
 <section id="eventPanel" class="series-panel" style="display:none" aria-labelledby="eventsHeading">
   <h2 id="eventsHeading">Events</h2>
   <p id="eventSummary" aria-live="polite"></p>
   <label for="comtradeFiles">Associate a COMTRADE .cfg + .dat pair with the selected event</label>
-  <input id="comtradeFiles" type="file" accept=".cfg,.dat" multiple onchange="attachEventComtrade(this.files)">
+  <input id="comtradeFiles" type="file" accept=".cfg,.dat,.hdr" multiple onchange="attachEventComtrade(this.files)">
   <p id="comtradeStatus" aria-live="polite">No COMTRADE files loaded. Files stay in this browser.</p>
   <div class="series-scroll" tabindex="0" role="region" aria-label="PQDIF events">
     <table><thead><tr><th>View</th><th>Time</th><th>Type</th><th>Event</th><th>Trigger</th><th>Channels</th></tr></thead><tbody id="eventRows"></tbody></table>
@@ -352,17 +374,33 @@ function initApp() {
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
 
-  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('click', event => { if (event.target !== fileInput) fileInput.click(); });
   dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
   dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('dragover');
-    if (e.dataTransfer.files.length) loadFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) loadSelectedFiles(e.dataTransfer.files);
   });
   fileInput.addEventListener('change', () => {
-    if (fileInput.files.length) loadFile(fileInput.files[0]);
+    if (fileInput.files.length) loadSelectedFiles(fileInput.files);
+    fileInput.value = '';
   });
+}
+
+async function loadSelectedFiles(files) {
+  const selected = Array.from(files);
+  const pqd = selected.find(file => /\.pqd$/i.test(file.name));
+  if (pqd && selected.length === 1) return loadFile(pqd);
+  if (pqd) {
+    document.getElementById('importStatus').textContent = 'Choose one .pqd file or a matching COMTRADE set.';
+    return;
+  }
+  try { await loadStandaloneComtrade(selected); }
+  catch (error) {
+    document.getElementById('importStatus').textContent = error.message;
+    document.getElementById('standaloneComtradeStatus').textContent = error.message;
+  }
 }
 
 async function loadFile(file) {
@@ -371,6 +409,7 @@ async function loadFile(file) {
     LOGICAL = Pqdif.parsePqdif(await file.arrayBuffer());
 
     document.getElementById('dropZone').style.display = 'none';
+    document.getElementById('comtradeViewer').style.display = 'none';
     document.getElementById('controls').style.display = 'flex';
     document.getElementById('meta').textContent =
       `${file.name} | ${LOGICAL.observations.length} observations | ${new Set(LOGICAL.observations.map(o => o.dataSource.name)).size} data sources`;
@@ -1867,19 +1906,238 @@ function parseComtrade(cfgText, buffer) {
     }
   } else throw new Error(`Unsupported COMTRADE data format: ${format}.`);
   if (!sampleCount) throw new Error('COMTRADE recording contains no samples.');
+  if (!channels.some(channel => channel.points.length)) throw new Error('COMTRADE recording contains no valid analog samples.');
   return {channels,start,trigger,frequency,sampleCount,format};
+}
+function parseComtradeHdr(text) {
+  const fields = new Map(text.replace(/^\uFEFF/, '').split(/\r?\n/).map(line => {
+    const separator = line.indexOf(':');
+    return separator < 0 ? [] : [line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim()];
+  }).filter(pair => pair.length));
+  const utcDate = value => {
+    const match = String(value || '').match(/^UTC\s+(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/i);
+    if (!match) return null;
+    const [, day, month, year, hour, minute, second, fraction = ''] = match;
+    return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute),
+      Number(second), Number((fraction + '000').slice(0, 3)));
+  };
+  return {
+    cause: fields.get('cause / ursache') || '',
+    faultNumber: fields.get('fault number / stoerfallnummer') || '',
+    triggerName: fields.get('trigger name / triggername') || '',
+    timeZone: fields.get('time zone / zeitzone') || '',
+    startUtc: utcDate(fields.get('start time / startzeit')),
+    triggerUtc: utcDate(fields.get('trigger time / triggerzeit'))
+  };
+}
+function applyComtradeHdr(recording, hdrText) {
+  const header = parseComtradeHdr(hdrText);
+  recording.header = header;
+  if (header.startUtc === null || header.triggerUtc === null) return recording;
+  const cfgInterval = recording.trigger - recording.start;
+  const utcInterval = header.triggerUtc - header.startUtc;
+  if (Math.abs(cfgInterval - utcInterval) > 2) throw new Error('COMTRADE CFG and HDR trigger intervals disagree.');
+  const shift = header.startUtc - recording.start;
+  recording.channels.forEach(channel => channel.points.forEach(point => { point.x += shift; }));
+  recording.start = header.startUtc;
+  recording.trigger = header.triggerUtc;
+  recording.timeSource = 'HDR UTC';
+  return recording;
+}
+function comtradeFileSet(files) {
+  const selected = Array.from(files);
+  const cfg = selected.find(file => /\.cfg$/i.test(file.name));
+  const dat = selected.find(file => /\.dat$/i.test(file.name));
+  const hdr = selected.find(file => /\.hdr$/i.test(file.name));
+  const stem = file => file.name.replace(/\.[^.]+$/, '').toLowerCase();
+  if (selected.length < 2 || selected.length > 3 || !cfg || !dat ||
+      selected.some(file => !/\.(cfg|dat|hdr)$/i.test(file.name) || stem(file) !== stem(cfg)) ||
+      selected.length === 3 && !hdr) {
+    throw new Error('Choose matching .cfg and .dat files, with an optional .hdr of the same base name.');
+  }
+  return { cfg, dat, hdr };
+}
+async function readComtradeFiles(files) {
+  const { cfg, dat, hdr } = comtradeFileSet(files);
+  const recording = parseComtrade(await cfg.text(), await dat.arrayBuffer());
+  if (hdr) applyComtradeHdr(recording, await hdr.text());
+  else recording.timeSource = 'CFG local clock';
+  recording.fileName = cfg.name.replace(/\.cfg$/i, '');
+  return recording;
+}
+let standaloneComtrade = null;
+let standaloneComtradeCharts = [];
+async function loadStandaloneComtrade(files) {
+  const recording = await readComtradeFiles(files);
+  standaloneComtradeCharts.forEach(chart => chart.destroy());
+  standaloneComtradeCharts = [];
+  standaloneComtrade = recording;
+  activeCharts.forEach(chart => chart.destroy()); activeCharts = [];
+  document.getElementById('controls').style.display = 'none';
+  document.getElementById('eventPanel').style.display = 'none';
+  document.getElementById('seriesPanel').style.display = 'none';
+  document.getElementById('charts').innerHTML = '';
+  document.getElementById('dropZone').style.display = 'none';
+  document.getElementById('comtradeViewer').style.display = 'block';
+  document.getElementById('comtradeHeading').textContent = `COMTRADE recording · ${recording.fileName}`;
+  document.getElementById('meta').textContent = `${recording.fileName} | ${recording.sampleCount.toLocaleString()} samples | ${recording.channels.length} analog channels`;
+  const firstRecorded = recording.channels.find(channel => channel.points.length);
+  document.getElementById('standaloneComtradeStatus').textContent =
+    `${recording.format} · ${recording.frequency} Hz nominal · ${recording.timeSource} · ` +
+    `${new Date(recording.start).toLocaleString()} – ${new Date(firstRecorded.points.at(-1).x).toLocaleString()}`;
+  const metadata = document.getElementById('comtradeMetadata'); metadata.innerHTML = '';
+  const details = recording.header;
+  if (details) {
+    const values = [details.faultNumber && `Fault ${details.faultNumber}`,
+      details.cause && `Cause: ${details.cause}`,
+      details.triggerName && `Trigger channels: ${details.triggerName}`,
+      details.timeZone && `Device timezone: ${details.timeZone}`].filter(Boolean);
+    metadata.textContent = values.join(' · ');
+  } else metadata.textContent = 'No HDR supplied. CFG clock times are interpreted in the computer’s local timezone.';
+  const zeroChannels = recording.channels.filter(channel => channel.points.length &&
+    channel.points.every(point => point.y === 0)).map(channel => channel.name);
+  if (zeroChannels.length) metadata.textContent += ` · Zero-valued channels in source: ${zeroChannels.join(', ')}`;
+  const controls = document.getElementById('comtradeChannels'); controls.innerHTML = '';
+  recording.channels.forEach((channel, index) => {
+    const label = document.createElement('label');
+    const input = document.createElement('input'); input.type = 'checkbox'; input.value = String(index); input.checked = true;
+    input.addEventListener('change', renderStandaloneComtrade);
+    label.append(input, document.createTextNode(` ${channel.name} [${channel.unit}]`)); controls.appendChild(label);
+  });
+  renderStandaloneComtrade();
+}
+function comtradeDisplayPoints(points, trigger, limit = 12000) {
+  if (points.length <= limit) return points.map(point => ({ x: point.x - trigger, y: point.y }));
+  const bucket = Math.ceil(points.length / Math.floor(limit / 2));
+  const result = [];
+  for (let first = 0; first < points.length; first += bucket) {
+    const end = Math.min(points.length, first + bucket);
+    let low = first, high = first;
+    for (let i = first + 1; i < end; i++) {
+      if (points[i].y < points[low].y) low = i;
+      if (points[i].y > points[high].y) high = i;
+    }
+    for (const i of [...new Set([low, high])].sort((a, b) => a - b))
+      result.push({ x: points[i].x - trigger, y: points[i].y });
+  }
+  return result;
+}
+function comtradeChannelGroup(channel) {
+  if (channel.unit === 'A') return 'Current';
+  if (channel.unit === 'V' && /(?:AB|BC|CA|12|23|31)\b/i.test(channel.name)) return 'Line-line voltage';
+  if (channel.unit === 'V') return 'Line-neutral voltage';
+  return channel.unit || 'Other';
+}
+function resetComtradeZoom() {
+  standaloneComtradeCharts.forEach(chart => chart.resetZoom());
+}
+function renderStandaloneComtrade() {
+  const recording = standaloneComtrade;
+  if (!recording) return;
+  standaloneComtradeCharts.forEach(chart => chart.destroy());
+  standaloneComtradeCharts = [];
+  const target = document.getElementById('comtradeCharts'); target.innerHTML = '';
+  const summary = document.getElementById('comtradeSummary'); summary.innerHTML = '';
+  const checked = new Set(Array.from(document.querySelectorAll('#comtradeChannels input:checked'), input => Number(input.value)));
+  const selected = recording.channels.map((channel, index) => ({ channel, index })).filter(entry => checked.has(entry.index));
+  if (!selected.length) { target.textContent = 'Select at least one channel to display.'; return; }
+  const recorded = recording.channels.find(channel => channel.points.length);
+  const first = recorded.points[0].x - recording.trigger;
+  const last = recorded.points.at(-1).x - recording.trigger;
+  const niceStep = value => {
+    const scale = 10 ** Math.floor(Math.log10(Math.max(value, 0.001)));
+    return [1, 2, 2.5, 5, 10].map(n => n * scale).find(n => n >= value) || 10 * scale;
+  };
+  const tick = niceStep((last - first) / 5);
+  const axisMin = Math.floor(first / tick) * tick;
+  const axisMax = Math.ceil(last / tick) * tick;
+  const board = document.createElement('div'); board.className = 'fault-board osc-board'; target.appendChild(board);
+  const legend = document.createElement('aside'); legend.className = 'fault-legend'; board.appendChild(legend);
+  const panels = document.createElement('div'); panels.className = 'fault-panels'; board.appendChild(panels);
+  const marker = { id: 'comtradeTrigger', afterDraw(chart) {
+    const x = chart.scales.x.getPixelForValue(0), area = chart.chartArea;
+    if (x < area.left || x > area.right) return;
+    chart.ctx.save(); chart.ctx.strokeStyle = '#dedede'; chart.ctx.lineWidth = 1;
+    chart.ctx.beginPath(); chart.ctx.moveTo(x, area.top); chart.ctx.lineTo(x, area.bottom); chart.ctx.stroke(); chart.ctx.restore();
+  } };
+  const groups = ['Line-neutral voltage', 'Line-line voltage', 'Current', ...new Set(selected.map(entry =>
+    comtradeChannelGroup(entry.channel)).filter(name => !['Line-neutral voltage', 'Line-line voltage', 'Current'].includes(name)))];
+  const colors = ['#ff8300', '#48c557', '#987ac9', '#e58a82'];
+  const visibleGroups = groups.map(name => ({ name, entries: selected.filter(entry =>
+    comtradeChannelGroup(entry.channel) === name) })).filter(group => group.entries.length);
+  visibleGroups.forEach((group, panelIndex) => {
+    const unit = group.entries[0].channel.unit;
+    const datasets = group.entries.map(({ channel }, index) => ({
+      label: channel.name, data: comtradeDisplayPoints(channel.points, recording.trigger),
+      borderColor: colors[index % colors.length], backgroundColor: colors[index % colors.length],
+      pointRadius: 0, borderWidth: 1.2, tension: 0
+    }));
+    const options = numericOptions('Time relative to trigger (ms)', unit);
+    options.animation = false;
+    options.scales.x.min = axisMin; options.scales.x.max = axisMax;
+    options.scales.x.ticks.stepSize = tick; options.scales.x.ticks.autoSkip = false;
+    options.scales.x.ticks.maxRotation = 0;
+    options.scales.x.ticks.callback = value => `${Number(value.toFixed(1))} ms`;
+    options.scales.x.ticks.display = panelIndex === visibleGroups.length - 1;
+    options.scales.x.title.display = panelIndex === visibleGroups.length - 1;
+    const peak = niceStep(Math.max(...group.entries.map(entry => entry.channel.points.reduce((max, point) =>
+      Math.max(max, Math.abs(point.y)), 0))));
+    options.scales.y.min = -peak; options.scales.y.max = peak;
+    options.scales.y.afterFit = axis => { axis.width = 85; };
+    options.plugins.legend.display = false;
+    options.plugins.zoom.zoom.mode = 'x'; options.plugins.zoom.pan.mode = 'x';
+    options.plugins.tooltip.callbacks.title = entries => {
+      const offset = entries[0]?.parsed.x ?? 0;
+      return `${offset.toFixed(3)} ms · ${new Date(recording.trigger + offset).toLocaleString()}`;
+    };
+    const panel = document.createElement('div'); panel.className = 'fault-panel osc-panel'; panels.appendChild(panel);
+    const canvas = document.createElement('canvas'); panel.appendChild(canvas);
+    const chart = new Chart(canvas, { type: 'line', data: { datasets }, options, plugins: [marker] });
+    standaloneComtradeCharts.push(chart);
+    const label = document.createElement('h4'); label.textContent = `${group.name} [${unit}]`; legend.appendChild(label);
+    datasets.forEach((dataset, index) => {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = dataset.label;
+      button.style.color = dataset.borderColor; button.setAttribute('aria-pressed', 'true');
+      button.addEventListener('click', () => {
+        const visible = chart.isDatasetVisible(index); chart.setDatasetVisibility(index, !visible);
+        button.setAttribute('aria-pressed', String(!visible)); button.style.opacity = visible ? '0.4' : '1'; chart.update('none');
+      }); legend.appendChild(button);
+    });
+  });
+  const synchronize = ({ chart }) => standaloneComtradeCharts.forEach(other => {
+    if (other === chart) return;
+    other.options.scales.x.min = chart.scales.x.min; other.options.scales.x.max = chart.scales.x.max; other.update('none');
+  });
+  standaloneComtradeCharts.forEach(chart => {
+    chart.options.plugins.zoom.zoom.onZoom = synchronize; chart.options.plugins.zoom.pan.onPan = synchronize;
+  });
+  const table = document.createElement('table'); table.className = 'osc-summary'; summary.appendChild(table);
+  const header = document.createElement('tr');
+  ['Channel', 'Unit', 'Samples', 'Minimum', 'Maximum'].forEach(value => {
+    const cell = document.createElement('th'); cell.textContent = value; header.appendChild(cell);
+  }); table.appendChild(header);
+  selected.forEach(({ channel }) => {
+    const limits = channel.points.reduce((value, point) => ({
+      min: Math.min(value.min, point.y), max: Math.max(value.max, point.y)
+    }), { min: Infinity, max: -Infinity });
+    const row = document.createElement('tr');
+    [channel.name, channel.unit, channel.points.length, limits.min.toFixed(3), limits.max.toFixed(3)]
+      .forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); });
+    table.appendChild(row);
+  });
+  const note = document.createElement('p'); note.className = 'series-note';
+  note.textContent = 'Waveforms use calibrated CFG values. Charts preserve per-bucket minima and maxima; statistics use every sample. The vertical line marks the trigger.';
+  summary.appendChild(note);
 }
 async function attachEventComtrade(files) {
   const index=selectedEventIndex, source=LOGICAL;
   const status=document.getElementById('comtradeStatus');
   try {
     if (index===null) throw new Error('Select the related PQDIF event first.');
-    const pair=Array.from(files), cfg=pair.find(f=>/\.cfg$/i.test(f.name)), dat=pair.find(f=>/\.dat$/i.test(f.name));
-    if (pair.length!==2 || !cfg || !dat || cfg.name.replace(/\.cfg$/i,'').toLowerCase()!==dat.name.replace(/\.dat$/i,'').toLowerCase()) throw new Error('Choose a matching .cfg and .dat pair with the same base name.');
-    const recording=parseComtrade(await cfg.text(),await dat.arrayBuffer());
+    const recording=await readComtradeFiles(files);
     if (LOGICAL !== source) throw new Error('The PQDIF file changed while loading COMTRADE. Select the event again.');
     eventComtrade.set(index,recording);
-    status.textContent=`Associated ${cfg.name} with ${LOGICAL.observations[index].name}. ${recording.sampleCount} samples. COMTRADE times are interpreted in the displayed local timezone.`;
+    status.textContent=`Associated ${recording.fileName} with ${LOGICAL.observations[index].name}. ${recording.sampleCount} samples. Time source: ${recording.timeSource}.`;
     if (selectedEventIndex===index) openEventWaveform(index);
   } catch(error) { status.textContent=error.message; }
 }

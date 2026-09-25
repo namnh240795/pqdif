@@ -45,7 +45,10 @@ test('viewer loads the shared library, prepares every observation, and exports m
   const document = {
     getElementById(id) { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
     createTextNode(text) { return {textContent:text}; },
-    querySelectorAll() { return elements.get("faultChannels").children.flatMap(label => label.children).filter(input => input.checked); },
+    querySelectorAll(selector) {
+      const id = selector.startsWith('#comtradeChannels') ? 'comtradeChannels' : 'faultChannels';
+      return elements.get(id).children.flatMap(label => label.children).filter(input => input.checked);
+    },
     createElement: node
   };
   const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
@@ -358,6 +361,26 @@ test('viewer loads the shared library, prepares every observation, and exports m
   vm.runInContext('downloadJson()', context);
   assert.equal(downloadName, 'pqdif_data.json');
   assert.deepStrictEqual(JSON.parse(await downloadedBlob.text()), expected);
+  const header = '\uFEFFCause / Ursache: V_RMS_LOWER\nFault number / Stoerfallnummer: 00019\n' +
+    'Start time / Startzeit: UTC 01/09/2024,00:00:00.000000\n' +
+    'Trigger time / Triggerzeit: UTC 01/09/2024,00:00:00.001000';
+  context.comtradeHdr = header;
+  context.comtradeCfg = cfg;
+  context.comtradeDat = new TextEncoder().encode('1,0,10,0\n2,1000,20,1').buffer;
+  const corrected = vm.runInContext('applyComtradeHdr(parseComtrade(comtradeCfg,comtradeDat),comtradeHdr)', context);
+  assert.equal(new Date(corrected.start).toISOString(), '2024-09-01T00:00:00.000Z');
+  assert.equal(new Date(corrected.trigger).toISOString(), '2024-09-01T00:00:00.001Z');
+  assert.equal(corrected.header.cause, 'V_RMS_LOWER');
+  const textFile = (name, value) => ({name, async text() { return value; }});
+  const datFile = {name:'fault.dat',async arrayBuffer() { return context.comtradeDat; }};
+  await vm.runInContext('loadStandaloneComtrade(comtradeFiles)', Object.assign(context, {
+    comtradeFiles: [textFile('fault.cfg',cfg), datFile, textFile('fault.hdr',header)]
+  }));
+  assert.equal(document.getElementById('comtradeViewer').style.display, 'block');
+  assert.equal(vm.runInContext('standaloneComtrade.sampleCount', context), 2);
+  assert.equal(vm.runInContext('standaloneComtradeCharts.length', context), 1);
+  assert.deepStrictEqual(Array.from(vm.runInContext('standaloneComtradeCharts[0].config.data.datasets[0].data', context), point => point.x), [-1, 0]);
+  assert.throws(() => vm.runInContext("comtradeFileSet([{name:'a.cfg'},{name:'b.dat'}])", context), /matching/);
 });
 
 
