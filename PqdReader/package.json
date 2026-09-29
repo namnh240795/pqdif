@@ -1,10 +1,11 @@
 {
   "name": "pqdif",
   "version": "0.1.1",
-  "description": "Shared Node.js and browser PQDIF parser matching the Gemstone.PQDIF JSON export",
+  "description": "Node.js and browser readers for PQDIF and COMTRADE power-quality recordings",
   "keywords": [
     "pqdif",
     "pqd",
+    "comtrade",
     "power-quality",
     "power-quality-data-interchange-format",
     "electrical-measurements",
@@ -24,7 +25,13 @@
       "import": "./lib/pqdif.mjs",
       "require": "./lib/pqdif.js"
     },
-    "./browser": "./lib/pqdif.js"
+    "./browser": "./lib/pqdif.js",
+    "./comtrade": {
+      "types": "./lib/comtrade.d.ts",
+      "import": "./lib/comtrade.mjs",
+      "require": "./lib/comtrade.js"
+    },
+    "./comtrade/browser": "./lib/comtrade.js"
   },
   "files": [
     "lib/",

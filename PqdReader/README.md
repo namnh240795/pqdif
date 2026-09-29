@@ -1,6 +1,8 @@
-# pqdif — PQDIF reader for Node.js and browsers
+# pqdif — PQDIF and COMTRADE readers for Node.js and browsers
 
 `lib/pqdif.js` is the shared parser for Node.js and the browser. It exports `parsePqdif`, `PqdifParser`, and `seriesValueTypeNames`. It does not read HTML, use a DOM, or execute code with `vm`. No build step is required.
+
+`lib/comtrade.js` is the independent COMTRADE reader used by `index.html`. The package exposes it as `pqdif/comtrade` in Node.js and as the global `Comtrade` in a classic browser script.
 
 ## Node.js
 
@@ -25,6 +27,22 @@ import { parsePqdif } from 'pqdif';
 ```
 
 For local development before publication, run `npm install /absolute/path/to/pqdif/PqdReader` in the consuming project.
+
+Read matching COMTRADE `.cfg` and `.dat` files, plus an optional `.hdr`:
+
+```js
+const fs = require('node:fs');
+const { parseComtrade } = require('pqdif/comtrade');
+
+const recording = parseComtrade(
+  fs.readFileSync('fault.cfg', 'utf8'),
+  fs.readFileSync('fault.dat'),
+  fs.readFileSync('fault.hdr', 'utf8') // optional
+);
+console.log(recording.channels[0].points, recording.digitalChannels);
+```
+
+ES modules can use `import { parseComtrade } from 'pqdif/comtrade'`. The reader supports ASCII, BINARY, BINARY32, and FLOAT32 DAT files. Analog points use the CFG calibration `a × raw + b`; digital points contain 0 or 1. With no HDR, CFG timestamps are interpreted in the computer's local timezone. With an HDR containing UTC start and trigger timestamps, those timestamps are applied to every point.
 
 The installed package provides a CLI:
 
@@ -59,11 +77,28 @@ For another HTML page, copy `node_modules/pqdif/lib/pqdif.js` into your web asse
 </script>
 ```
 
+To parse COMTRADE in a browser without the viewer:
+
+```html
+<script src="./lib/comtrade.js"></script>
+<script>
+  async function readComtrade(cfgFile, datFile, hdrFile) {
+    return Comtrade.parseComtrade(
+      await cfgFile.text(),
+      await datFile.arrayBuffer(),
+      hdrFile ? await hdrFile.text() : undefined
+    );
+  }
+</script>
+```
+
 ## API
 
 `parsePqdif(buffer, inflate?)` synchronously parses an `ArrayBuffer`, Node `Buffer`, or typed-array view, respecting its byte offset and length. It returns the JSON-compatible object exported by `Program.cs`. An optional synchronous `inflate(bytes)` function can override decompression; it must return a `Uint8Array` (or Node `Buffer`). The default is Node zlib or browser `pako.inflate`. Compressed input without a browser inflater produces an explicit error.
 
 For physical records, use `new PqdifParser(buffer, inflate?).parseFile()`. `seriesValueTypeNames` maps series value-type GUIDs to display labels; it does not replace the file's own `valueTypeName` field.
+
+`parseComtrade(cfgText, datBytes, hdrText?)` returns analog `channels`, `digitalChannels`, `start`, `trigger`, `frequency`, `sampleCount`, `format`, and `timeSource`. `datBytes` accepts an `ArrayBuffer`, Node `Buffer`, or typed-array view. `parseComtradeHdr(hdrText)` reads the optional HDR metadata, and `applyComtradeHdr(recording, hdrText)` adjusts an existing recording in place. The COMTRADE parser has no external runtime dependencies.
 
 Invalid or truncated physical records throw. As in `Program.cs`, series that cannot be converted to numbers (such as timestamps) export `count: 0` and an empty `values` array. Deprecated total-file and PKZIP compression are unsupported, as in the C# library.
 

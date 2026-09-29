@@ -8,6 +8,7 @@ const library = require('./');
 const { parsePqdif } = library;
 const { inflateSync } = require('node:zlib');
 const librarySource = fs.readFileSync(path.join(__dirname, 'lib/pqdif.js'), 'utf8');
+const comtradeSource = fs.readFileSync(path.join(__dirname, 'lib/comtrade.js'), 'utf8');
 const fixture = path.join(__dirname, '..', '40-6084 PQDIFExport_Utility S 10kV-v1.pqd');
 const expected = JSON.parse(fs.readFileSync(path.join(__dirname, 'pqdif_data.json'), 'utf8'));
 const bytes = fs.readFileSync(fixture);
@@ -53,6 +54,7 @@ test('viewer loads the shared library, prepares every observation, and exports m
   };
   const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
   assert.match(html, /<script src="\.\/lib\/pqdif\.js"><\/script>/);
+  assert.match(html, /<script src="\.\/lib\/comtrade\.js"><\/script>/);
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const context = vm.createContext({ document, ArrayBuffer, Uint8Array, DataView, TextDecoder,
     pako: { inflate: inflateSync }, Blob, console,
@@ -75,6 +77,7 @@ test('viewer loads the shared library, prepares every observation, and exports m
     destroy() { this.destroyed = true; }
   }});
   vm.runInContext(librarySource, context);
+  vm.runInContext(comtradeSource, context);
   vm.runInContext(script, context);
   await vm.runInContext('loadFile(file)', context);
   assert.equal(document.getElementById('controls').style.display, 'flex');
@@ -326,10 +329,11 @@ test('viewer loads the shared library, prepares every observation, and exports m
   const cfg = ['Test,Device,1999','2,1A,1D','1,U1,A,,V,2,1,0,-32767,32767,1,1,P','1,Trip,,0','50','1','1000,2','01/09/2024,00:00:00.000000','01/09/2024,00:00:00.001000','ASCII','1'].join('\n');
   context.comtradeCfg = cfg;
   context.comtradeDat = new TextEncoder().encode('1,0,10,0\n2,1000,20,1').buffer;
-  let recording = vm.runInContext('parseComtrade(comtradeCfg,comtradeDat)',context);
+  let recording = vm.runInContext('Comtrade.parseComtrade(comtradeCfg,comtradeDat)',context);
   assert.equal(recording.channels[0].points[0].y,21);
   assert.equal(recording.channels[0].points[1].y,41);
   assert.equal(recording.channels[0].points[1].x-recording.channels[0].points[0].x,1);
+  assert.deepStrictEqual(Array.from(recording.digitalChannels[0].points, point => point.y), [0, 1]);
   for (const format of ['BINARY','BINARY32','FLOAT32']) {
     const size = format === 'BINARY' ? 12 : 14;
     const buffer = new ArrayBuffer(size*2), view = new DataView(buffer);
@@ -340,10 +344,11 @@ test('viewer loads the shared library, prepares every observation, and exports m
       else view.setFloat32(i*size+8,10*(i+1),true);
     }
     context.comtradeCfg = cfg.replace('ASCII',format); context.comtradeDat=buffer;
-    recording=vm.runInContext('parseComtrade(comtradeCfg,comtradeDat)',context);
+    recording=vm.runInContext('Comtrade.parseComtrade(comtradeCfg,comtradeDat)',context);
     assert.equal(recording.channels[0].points[1].y,41);
+    assert.deepStrictEqual(Array.from(recording.digitalChannels[0].points, point => point.y), [0, 0]);
     context.comtradeDat=buffer.slice(0,-1);
-    assert.throws(()=>vm.runInContext('parseComtrade(comtradeCfg,comtradeDat)',context),/Truncated/);
+    assert.throws(()=>vm.runInContext('Comtrade.parseComtrade(comtradeCfg,comtradeDat)',context),/Truncated/);
   }
   const markers = vm.runInContext(`(() => {
     const previous=LOGICAL;
@@ -367,7 +372,7 @@ test('viewer loads the shared library, prepares every observation, and exports m
   context.comtradeHdr = header;
   context.comtradeCfg = cfg;
   context.comtradeDat = new TextEncoder().encode('1,0,10,0\n2,1000,20,1').buffer;
-  const corrected = vm.runInContext('applyComtradeHdr(parseComtrade(comtradeCfg,comtradeDat),comtradeHdr)', context);
+  const corrected = vm.runInContext('Comtrade.parseComtrade(comtradeCfg,comtradeDat,comtradeHdr)', context);
   assert.equal(new Date(corrected.start).toISOString(), '2024-09-01T00:00:00.000Z');
   assert.equal(new Date(corrected.trigger).toISOString(), '2024-09-01T00:00:00.001Z');
   assert.equal(corrected.header.cause, 'V_RMS_LOWER');
@@ -400,11 +405,31 @@ test('viewer loads the shared library, prepares every observation, and exports m
 });
 
 
-test('Node package entry and existing CLI entry expose the same library', () => {
+test('Node package entry and existing CLI entry expose the same library', async () => {
   assert.strictEqual(require('./pqdif.cjs'), library);
   assert.equal(typeof library.PqdifParser, 'function');
   assert.throws(() => parsePqdif('not binary'), /Expected an ArrayBuffer/);
   assert.throws(() => parsePqdif(null), /Expected an ArrayBuffer/);
+  const comtrade = require('./lib/comtrade.js');
+  const esm = await import('./lib/comtrade.mjs');
+  assert.strictEqual(esm.parseComtrade, comtrade.parseComtrade);
+  assert.strictEqual(esm.default, comtrade);
+  const cfg = ['Test,Device,1999','2,1A,1D','1,U1,A,,V,2,1,0,-32767,32767,1,1,P','1,Trip,,0',
+    '50','1','1000,2','01/09/2024,00:00:00.000000','01/09/2024,00:00:00.001000','BINARY','1'].join('\n');
+  const payload = Buffer.alloc(24);
+  payload.writeUInt32LE(1, 0); payload.writeInt16LE(10, 8);
+  payload.writeUInt32LE(2, 12); payload.writeUInt32LE(1000, 16);
+  payload.writeInt16LE(20, 20); payload.writeUInt16LE(1, 22);
+  const padded = Buffer.concat([Buffer.alloc(7), payload, Buffer.alloc(5)]);
+  const parsed = comtrade.parseComtrade(cfg, padded.subarray(7, 31));
+  assert.deepStrictEqual(parsed.channels[0].points.map(point => point.y), [21, 41]);
+  assert.deepStrictEqual(parsed.digitalChannels[0].points.map(point => point.y), [0, 1]);
+  const browser = vm.createContext({TextDecoder, DataView});
+  vm.runInContext(comtradeSource, browser);
+  browser.cfg = cfg;
+  browser.dat = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
+  assert.equal(vm.runInContext('Comtrade.parseComtrade(cfg, dat).sampleCount', browser), 2,
+    'classic browser global accepts an ArrayBuffer from a different realm');
 });
 
 test('browser library reports missing decompression support and accepts an injected inflater', () => {
