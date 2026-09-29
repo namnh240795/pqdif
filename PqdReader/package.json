@@ -1,6 +1,6 @@
 {
   "name": "pqdif",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Node.js and browser readers for PQDIF and COMTRADE power-quality recordings",
   "keywords": [
     "pqdif",
