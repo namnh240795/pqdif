@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COMTRADE Data Channels</title>
+<script src="./lib/comtrade.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #202020; color: #e5e5e5; font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 20px 28px; background: #282828; border-bottom: 1px solid #414141; }
+  h1 { margin: 0 0 6px; font-size: 23px; }
+  header p { margin: 0; color: #bdbdbd; }
+  a { color: #ffad58; }
+  main { padding: 22px 28px; }
+  .toolbar { display: flex; align-items: end; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+  .toolbar label { display: grid; gap: 6px; color: #bdbdbd; }
+  input { background: #282828; color: #e5e5e5; border: 1px solid #626262; border-radius: 2px; padding: 9px 10px; font: inherit; }
+  input:focus-visible { outline: 2px solid #ff8300; }
+  #search { min-width: min(440px, 100%); }
+  #status { min-height: 22px; color: #c8c8c8; margin: 0 0 12px; }
+  #metadata { color: #bdbdbd; margin: 0 0 12px; line-height: 1.6; }
+  .table-wrap { border: 1px solid #555; overflow: auto; max-height: calc(100vh - 245px); }
+  table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+  th, td { padding: 10px 12px; border-bottom: 1px solid #414141; white-space: nowrap; }
+  th { position: sticky; top: 0; z-index: 1; background: #303030; color: #f4f4f4; }
+  td:first-child { color: #ffad58; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  tr:nth-child(even) { background: #262626; }
+  tbody tr:hover { background: #383838; }
+  @media (max-width: 700px) { header, main { padding: 16px; } .table-wrap { max-height: calc(100vh - 300px); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>COMTRADE data channels</h1>
+  <p>One row for every analog or digital channel in the recording. <a href="./index.html">Open diagram viewer</a> · <a href="./index2.html">PQDIF series</a></p>
+</header>
+<main>
+  <div class="toolbar">
+    <label>Open matching COMTRADE files (.cfg + .dat, optional .hdr)
+      <input id="fileInput" type="file" accept=".cfg,.dat,.hdr" multiple>
+    </label>
+    <label>Search rows <input id="search" type="search" placeholder="ID, type, channel, phase, unit…" disabled></label>
+  </div>
+  <p id="status" role="status" aria-live="polite">Select matching .cfg and .dat files to list their channels.</p>
+  <p id="metadata"></p>
+  <div class="table-wrap" role="region" aria-label="All COMTRADE channels" tabindex="0">
+    <table>
+      <thead><tr><th>ID</th><th>Type</th><th>Channel</th><th>Phase</th><th>Unit</th><th>Samples</th><th>Minimum</th><th>Maximum</th><th>First value</th><th>Last value</th><th>Calibration / normal state</th></tr></thead>
+      <tbody id="channelRows"></tbody>
+    </table>
+  </div>
+</main>
+<script>
+const fileInput = document.getElementById('fileInput');
+const search = document.getElementById('search');
+const status = document.getElementById('status');
+const metadata = document.getElementById('metadata');
+const body = document.getElementById('channelRows');
+let rows = [];
+let loadedFileName = '';
+
+function matchingFiles(files) {
+  const selected = Array.from(files);
+  const cfg = selected.find(file => /\.cfg$/i.test(file.name));
+  const dat = selected.find(file => /\.dat$/i.test(file.name));
+  const hdr = selected.find(file => /\.hdr$/i.test(file.name));
+  const stem = file => file.name.replace(/\.[^.]+$/, '').toLowerCase();
+  if (selected.length < 2 || selected.length > 3 || !cfg || !dat ||
+      selected.some(file => !/\.(cfg|dat|hdr)$/i.test(file.name) || stem(file) !== stem(cfg)) ||
+      selected.length === 3 && !hdr) {
+    throw new Error('Choose matching .cfg and .dat files, with an optional .hdr of the same base name.');
+  }
+  return { cfg, dat, hdr };
+}
+
+function number(value) {
+  return Number.isFinite(value) ? Number(value.toPrecision(8)).toString() : '—';
+}
+
+function channelRows(recording) {
+  const result = [];
+  function add(channel, index, digital) {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const point of channel.points) {
+      if (point.y < min) min = point.y;
+      if (point.y > max) max = point.y;
+    }
+    result.push([
+      `${digital ? 'd' : 'a'}${index + 1}`,
+      digital ? 'Digital' : 'Analog',
+      channel.name || '—',
+      channel.phase || '—',
+      digital ? 'state' : channel.unit || '—',
+      String(channel.points.length),
+      number(min), number(max),
+      channel.points.length ? number(channel.points[0].y) : '—',
+      channel.points.length ? number(channel.points.at(-1).y) : '—',
+      digital ? `Normal state ${channel.normalState}` : `a ${number(channel.a)} · b ${number(channel.b)} · skew ${number(channel.skew)} µs`
+    ]);
+  }
+  recording.channels.forEach((channel, index) => add(channel, index, false));
+  recording.digitalChannels.forEach((channel, index) => add(channel, index, true));
+  return result;
+}
+
+function renderRows(query = '') {
+  const needle = query.trim().toLocaleLowerCase();
+  const matching = needle ? rows.filter(row => row.some(value => value.toLocaleLowerCase().includes(needle))) : rows;
+  const fragment = document.createDocumentFragment();
+  for (const row of matching) {
+    const tr = document.createElement('tr');
+    for (const value of row) {
+      const td = document.createElement('td');
+      td.textContent = value;
+      tr.appendChild(td);
+    }
+    fragment.appendChild(tr);
+  }
+  body.replaceChildren(fragment);
+  status.textContent = `${loadedFileName}: ${matching.length.toLocaleString()} of ${rows.length.toLocaleString()} channels${needle ? ' match the search' : ''}.`;
+}
+
+async function loadFiles(files) {
+  search.disabled = true;
+  rows = [];
+  body.replaceChildren();
+  metadata.replaceChildren();
+  search.value = '';
+  status.textContent = 'Reading COMTRADE files…';
+  try {
+    const { cfg, dat, hdr } = matchingFiles(files);
+    const recording = Comtrade.parseComtrade(await cfg.text(), await dat.arrayBuffer(), hdr ? await hdr.text() : undefined);
+    rows = channelRows(recording);
+    loadedFileName = cfg.name.replace(/\.cfg$/i, '');
+    const details = [
+      `${recording.sampleCount.toLocaleString()} samples`,
+      `${recording.channels.length} analog · ${recording.digitalChannels.length} digital channels`,
+      `${recording.frequency} Hz`,
+      recording.format,
+      `Start ${new Date(recording.start).toISOString()}`,
+      `Trigger ${new Date(recording.trigger).toISOString()}`,
+      recording.timeSource
+    ];
+    if (recording.header?.faultNumber) details.push(`Fault ${recording.header.faultNumber}`);
+    if (recording.header?.cause) details.push(`Cause ${recording.header.cause}`);
+    metadata.textContent = details.join(' · ');
+    search.disabled = false;
+    renderRows();
+  } catch (error) {
+    loadedFileName = '';
+    status.textContent = `Could not read COMTRADE files: ${error.message}`;
+  }
+}
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) loadFiles(fileInput.files);
+});
+search.addEventListener('input', () => renderRows(search.value));
+</script>
+</body>
+</html>
